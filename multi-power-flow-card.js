@@ -113,6 +113,8 @@ class MultiPowerFlowCardEditor extends HTMLElement {
 }
 
 if(!customElements.get('multi-power-flow-card'))customElements.define('multi-power-flow-card',MultiPowerFlowCard);
+if(!customElements.get('multi-power-flow-card-v2'))customElements.define('multi-power-flow-card-v2',MultiPowerFlowCard);
 if(!customElements.get('multi-power-flow-card-editor'))customElements.define('multi-power-flow-card-editor',MultiPowerFlowCardEditor);
 window.customCards=window.customCards||[];
-if(!window.customCards.some(c=>c.type==='multi-power-flow-card'))window.customCards.push({type:'multi-power-flow-card',name:'Multi Power Flow Card',description:'Generic configurable Home Assistant power-flow card.',preview:true,documentationURL:'https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card/'});
+if(!window.customCards.some(c=>c.type==='multi-power-flow-card')){window.customCards.push({type:'multi-power-flow-card',name:'Multi Power Flow Card',description:'Generic configurable Home Assistant power-flow card.',preview:true});}
+if(!window.customCards.some(c=>c.type==='multi-power-flow-card-v2')){window.customCards.push({type:'multi-power-flow-card-v2',name:'Multi Power Flow Card V2',description:'Generic configurable Home Assistant power-flow card (V2 alias).',preview:true});}
