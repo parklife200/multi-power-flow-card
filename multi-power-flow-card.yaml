@@ -1,0 +1,105 @@
+# Generic Multi Power Flow Card v2
+# Replace these example entities with your own Home Assistant entities.
+#
+# Sign convention after applying invert:
+#   grid    positive = import, negative = export
+#   solar   positive = generation
+#   home    positive = consumption
+#   battery positive = discharge, negative = charge
+#   device  positive = consumption
+#
+# Set invert: true where an integration reports the opposite direction.
+
+type: custom:multi-power-flow-card
+title: Home Energy
+
+core:
+  grid:
+    entity: sensor.grid_power
+    name: Grid
+    icon: mdi:transmission-tower
+    color: "#0288D1"
+    invert: false
+
+  solar:
+    entity: sensor.solar_power
+    name: Solar
+    icon: mdi:solar-power
+    color: "#FF9800"
+    invert: false
+
+  home:
+    entity: sensor.home_power
+    name: Home
+    icon: mdi:home
+    color: "#00BCD4"
+    invert: false
+
+  low_carbon:
+    entity: sensor.grid_fossil_fuel_percentage
+    name: Low Carbon
+    icon: mdi:leaf
+    color: "#00C853"
+    invert: false
+
+batteries:
+  - id: battery_1
+    entity: sensor.battery_power
+    soc_entity: sensor.battery_soc
+    status_entity: sensor.battery_status
+    name: Battery
+    icon: mdi:battery
+    color: "#00BCD4"
+    invert: false
+    enabled: true
+
+  # Add additional batteries as required.
+  # - id: battery_2
+  #   entity: sensor.second_battery_power
+  #   soc_entity: sensor.second_battery_soc
+  #   name: Second Battery
+  #   icon: mdi:battery
+  #   color: "#FFC107"
+
+devices:
+  - id: heat_pump
+    entity: sensor.heat_pump_power
+    name: Heat Pump
+    icon: mdi:heat-pump
+    color: "#FF24BA"
+    invert: false
+    enabled: true
+
+  - id: ev_charger
+    entity: sensor.ev_charger_power
+    name: EV Charger
+    icon: mdi:ev-station
+    color: "#07607E"
+    invert: false
+    enabled: true
+
+  - id: washing_machine
+    entity: sensor.washing_machine_power
+    name: Washing Machine
+    icon: mdi:washing-machine
+    color: "#2196F3"
+    invert: false
+    enabled: true
+
+display:
+  show_title: true
+  show_values: true
+  show_soc: true
+  show_icons: true
+  show_zero_values: false
+
+flow:
+  animate: true
+  animation_speed: 1
+  minimum_power: 10
+
+appearance:
+  background: "#111827"
+  border_radius: 16
+  node_size: 48
+  line_width: 2.8

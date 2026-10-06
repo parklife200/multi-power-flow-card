@@ -1,768 +1,117 @@
+/* Multi Power Flow Card v2 - generic/shareable Home Assistant custom card */
+
+const MPFC_DEFAULTS = {
+  title: 'Power Flow',
+  core: {
+    grid: { name: 'Grid', icon: 'mdi:transmission-tower', color: '#0288D1', invert: false },
+    solar: { name: 'Solar', icon: 'mdi:solar-power', color: '#FF9800', invert: false },
+    home: { name: 'Home', icon: 'mdi:home', color: '#00BCD4', invert: false },
+    low_carbon: { name: 'Low Carbon', icon: 'mdi:leaf', color: '#00C853', invert: false },
+  },
+  battery: { name: 'Battery', icon: 'mdi:battery', color: '#00BCD4', invert: false },
+  device: { name: 'Device', icon: 'mdi:flash', color: '#9C27B0', invert: false },
+  display: { show_title: true, show_values: true, show_soc: true, show_icons: true, show_zero_values: false },
+  flow: { animate: true, animation_speed: 1, minimum_power: 10 },
+  appearance: { background: '#111827', border_radius: 16, node_size: 48, line_width: 2.8 },
+};
+
+const MPFC_EMOJI = {
+  'mdi:transmission-tower':'🗼','mdi:solar-power':'☀️','mdi:home':'🏠','mdi:leaf':'🍃',
+  'mdi:battery':'🔋','mdi:battery-high':'🔋','mdi:battery-charging-100':'🔋','mdi:flash':'⚡',
+  'mdi:heat-pump':'🌀','mdi:server-network':'🖥️','mdi:car-electric':'🚗','mdi:ev-station':'🔌',
+  'mdi:tumble-dryer':'♨️','mdi:washing-machine':'🫧','mdi:television':'📺','mdi:dishwasher':'🍽️'
+};
+
+const clone = v => v == null ? v : JSON.parse(JSON.stringify(v));
+const entityId = v => typeof v === 'string' ? v : (v && typeof v.entity === 'string' ? v.entity : '');
+function merge(a,b) {
+  const r=clone(a)||{};
+  Object.entries(b||{}).forEach(([k,v])=>{
+    if(v && typeof v==='object'&&!Array.isArray(v)&&r[k]&&typeof r[k]==='object'&&!Array.isArray(r[k])) r[k]=merge(r[k],v);
+    else r[k]=clone(v);
+  }); return r;
+}
+function node(v, defaults) { return merge(defaults, typeof v==='string'?{entity:v}:v||{}); }
+
+// Converts the original entities.* format into the new generic format.
+function migrateLegacyConfig(c) {
+  if (!c || typeof c !== 'object') return {};
+  if (c.core || Array.isArray(c.batteries) || Array.isArray(c.devices)) return clone(c);
+  const e=c.entities||{};
+  const out={title:c.title||'Power Flow',core:{
+    grid:node(e.grid,MPFC_DEFAULTS.core.grid), solar:node(e.solar,MPFC_DEFAULTS.core.solar),
+    home:node(e.home,MPFC_DEFAULTS.core.home), low_carbon:node(e.fossil_fuel_percentage,MPFC_DEFAULTS.core.low_carbon)
+  },batteries:[],devices:[]};
+  const battery=(v,id,name,icon,color)=>{
+    if(!v)return null; const b=typeof v==='string'?{entity:v}:v; const ent=entityId(b.entity); if(!ent)return null;
+    return {id:b.id||id,entity:ent,soc_entity:entityId(b.soc_entity||b.state_of_charge),status_entity:entityId(b.status_entity||b.status),
+      name:b.name||name,icon:b.icon||icon,color:b.color||color,invert:!!b.invert,enabled:b.enabled!==false};
+  };
+  (Array.isArray(e.batteries)?e.batteries:[]).forEach((b,i)=>{const x=battery(b,b.id||`battery_${i+1}`,b.name||'Battery',b.icon||'mdi:battery',b.color||'#00BCD4');if(x)out.batteries.push(x);});
+  const g=battery(e.givenergy,'givenergy','GivEnergy','mdi:battery','#00BCD4');
+  const s=battery(e.solix,'solix','Solix','mdi:battery','#FFC107');
+  if(g&&!out.batteries.some(x=>x.id===g.id))out.batteries.push(g);
+  if(s&&!out.batteries.some(x=>x.id===s.id))out.batteries.push(s);
+  (Array.isArray(e.individual)?e.individual:[]).forEach((d,i)=>{if(d&&d.entity)out.devices.push({id:d.id||`device_${i+1}`,entity:d.entity,name:d.name||'Device',icon:d.icon||'mdi:flash',color:d.color||'#9C27B0',invert:!!d.invert,enabled:d.enabled!==false,position:d.position||'auto'});});
+  return out;
+}
+function normaliseConfig(c) {
+  const m=migrateLegacyConfig(c||{});
+  const r=merge({title:'Power Flow',core:{grid:null,solar:null,home:null,low_carbon:null},batteries:[],devices:[],display:MPFC_DEFAULTS.display,flow:MPFC_DEFAULTS.flow,appearance:MPFC_DEFAULTS.appearance},m);
+  Object.keys(r.core).forEach(k=>{if(r.core[k]!=null){r.core[k]=merge(MPFC_DEFAULTS.core[k],r.core[k]);r.core[k].entity=entityId(r.core[k].entity);r.core[k].enabled=!!r.core[k].entity;}});
+  r.batteries=(Array.isArray(r.batteries)?r.batteries:[]).map((b,i)=>{const x=merge(MPFC_DEFAULTS.battery,b||{});return {...x,id:x.id||`battery_${i+1}`,entity:entityId(x.entity),soc_entity:entityId(x.soc_entity),status_entity:entityId(x.status_entity),enabled:x.enabled!==false&&!!entityId(x.entity),invert:!!x.invert};});
+  r.devices=(Array.isArray(r.devices)?r.devices:[]).map((d,i)=>{const x=merge(MPFC_DEFAULTS.device,d||{});return {...x,id:x.id||`device_${i+1}`,entity:entityId(x.entity),enabled:x.enabled!==false&&!!entityId(x.entity),invert:!!x.invert,position:x.position||'auto'};});
+  return r;
+}
+
 class MultiPowerFlowCard extends HTMLElement {
-  constructor() {
-    super();
-    this.attachShadow({ mode: 'open' });
-    this._initialized = false;
-    this._nodeKey = '';
+  constructor(){super();this.attachShadow({mode:'open'});this._config={};this._cfg=normaliseConfig({});this._key='';}
+  setConfig(c){if(!c||typeof c!=='object')throw new Error('Invalid configuration');this._config=c;this._cfg=normaliseConfig(c);if(this._hass){this.syncLayout(true);this.updateValues();}}
+  set hass(h){this._hass=h;if(!this.shadowRoot.querySelector('svg'))this.syncLayout(true);this.updateValues();}
+  getCardSize(){return Math.max(5,4+Math.ceil(this._cfg.batteries.length/3)+Math.ceil(this._cfg.devices.length/4));}
+  getGridOptions(){return {rows:this.getCardSize(),columns:9,min_rows:5,min_columns:6};}
+  static getConfigElement(){return document.createElement('multi-power-flow-card-editor');}
+  static getStubConfig(){return {title:'Power Flow',core:{grid:{entity:''},solar:{entity:''},home:{entity:''},low_carbon:{entity:''}},batteries:[],devices:[]};}
+
+  _state(id){return id?this._hass?.states?.[id]:null;}
+  _raw(id){const s=this._state(id);let n=Number.parseFloat(s?.state);if(!Number.isFinite(n))return 0;return String(s?.attributes?.unit_of_measurement||'').toLowerCase().includes('kw')?n*1000:n;}
+  _power(n){const v=this._raw(n?.entity);return n?.invert?-v:v;}
+  _soc(id){const n=Number.parseFloat(this._state(id)?.state);return Number.isFinite(n)?Math.max(0,Math.min(100,Math.round(n))):null;}
+  _display(n){let v=Math.abs(this._power(n));if(v>=1000)return `${(v/1000).toFixed(1)} kW`;return `${Math.round(v)} ${this._state(n.entity)?.attributes?.unit_of_measurement||'W'}`;}
+  _name(n,fallback){return n?.name||this._state(n?.entity)?.attributes?.friendly_name||fallback;}
+  _icon(n,fallback){const i=n?.icon||fallback;return i?.startsWith('mdi:')?(MPFC_EMOJI[i]||'⚡'):i;}
+  _esc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
+
+  _nodes(){const c=this._cfg,n=[];
+    [['lowcarbon',c.core.low_carbon,65,40,'Low Carbon'],['grid',c.core.grid,65,205,'Grid'],['solar',c.core.solar,235,40,'Solar'],['home',c.core.home,405,205,'Home']].forEach(([id,x,px,py,f])=>{if(x?.enabled)n.push({id,...x,x:px,y:py,label:this._name(x,f),icon:this._icon(x,MPFC_DEFAULTS.core[id==='lowcarbon'?'low_carbon':id].icon),home:id==='home'});});
+    c.batteries.filter(x=>x.enabled).forEach((b,i)=>{n.push({id:`battery:${b.id}`,type:'battery',batteryId:b.id,...b,x:235+(i%3)*170,y:365+Math.floor(i/3)*135,label:this._name(b,b.name||'Battery'),icon:this._icon(b,'mdi:battery')});});
+    c.devices.filter(x=>x.enabled).forEach((d,i)=>{n.push({id:`device:${d.id}`,type:'device',deviceId:d.id,...d,x:575+(i%4)*150,y:40+Math.floor(i/4)*135,label:this._name(d,d.name||'Device'),icon:this._icon(d,'mdi:flash')});});return n;
   }
-
-  setConfig(config) {
-    this._config = config;
-    if (this._hass) {
-      this.syncLayout();
-      this.updateValues();
-    }
+  _path(a,b){const r=48,fx=a.x+r,fy=a.y+r,tx=b.x+r,ty=b.y+r,dx=tx-fx,dy=ty-fy,len=Math.max(1,Math.hypot(dx,dy)),ux=dx/len,uy=dy/len,sx=fx+ux*r,sy=fy+uy*r,ex=tx-ux*r,ey=ty-uy*r;if(Math.abs(dx)>Math.abs(dy)*1.3){const mx=(sx+ex)/2;return `M${sx.toFixed(1)} ${sy.toFixed(1)} C${mx.toFixed(1)} ${sy.toFixed(1)},${mx.toFixed(1)} ${ey.toFixed(1)},${ex.toFixed(1)} ${ey.toFixed(1)}`;}const my=(sy+ey)/2,bend=Math.min(55,Math.max(18,len*.18));return `M${sx.toFixed(1)} ${sy.toFixed(1)} C${sx.toFixed(1)} ${(my-bend*Math.sign(dy)).toFixed(1)},${ex.toFixed(1)} ${(my+bend*Math.sign(dy)).toFixed(1)},${ex.toFixed(1)} ${ey.toFixed(1)}`;}
+  _connections(){const c=this._cfg,n=this._nodes(),by=id=>n.find(x=>x.id===id),out=[];const grid=by('grid'),solar=by('solar'),home=by('home');
+    if(by('lowcarbon')&&grid)out.push({id:'lowcarbon-grid',from:'lowcarbon',to:'grid',watts:1,color:c.core.low_carbon.color,reverse:false});
+    if(grid&&home){const p=this._power(c.core.grid);out.push({id:'grid-home',from:'grid',to:'home',watts:Math.abs(p),color:c.core.grid.color,reverse:p<0});}
+    if(solar&&home)out.push({id:'solar-home',from:'solar',to:'home',watts:Math.max(0,this._power(c.core.solar)),color:c.core.solar.color,reverse:false});
+    c.batteries.filter(b=>b.enabled).forEach(b=>{const id=`battery:${b.id}`;if(!by(id))return;const p=this._power(b);if(home)out.push({id:p>=0?`${id}-home`:`home-${id}`,from:p>=0?id:'home',to:p>=0?'home':id,watts:Math.abs(p),color:b.color,reverse:false});});
+    c.devices.filter(d=>d.enabled).forEach(d=>{const id=`device:${d.id}`;if(home&&by(id))out.push({id:`home-${id}`,from:'home',to:id,watts:Math.abs(this._power(d)),color:d.color,reverse:false});});return out;
   }
-
-  set hass(hass) {
-    this._hass = hass;
-    if (!this._initialized) {
-      this.syncLayout();
-      this._initialized = true;
-    }
-    this.updateValues();
-  }
-
-  getCardSize() {
-    return 5;
-  }
-
-  static getLayoutOptions() {
-    return {
-      grid_rows: 5,
-      grid_columns: 4,
-      grid_min_columns: 3,
-    };
-  }
-
-  getEntityId(obj) {
-    if (!obj) return null;
-    if (typeof obj === 'string') return obj;
-    if (typeof obj === 'object' && obj.entity) return obj.entity;
-    return null;
-  }
-
-  getIconSymbol(icon, defaultEmoji) {
-    if (!icon) return defaultEmoji;
-    if (typeof icon === 'string' && !icon.startsWith('mdi:')) return icon;
-    const map = {
-      'mdi:leaf': '🍃',
-      'mdi:transmission-tower': '🗼',
-      'mdi:solar-power': '☀️',
-      'mdi:battery-high': '🔋',
-      'mdi:battery-charging-100': '🔋',
-      'mdi:home': '🏠',
-      'mdi:heat-pump': '🌀',
-      'mdi:server-network': '🖥️',
-      'mdi:car-electric': '🚗',
-      'mdi:tumble-dryer': '♨️',
-      'mdi:washing-machine': '🫧',
-      'mdi:television': '📺'
-    };
-    return map[icon] || defaultEmoji;
-  }
-
-  parseWatts(entityRef) {
-    const entityId = this.getEntityId(entityRef);
-    if (!this._hass || !entityId || !this._hass.states[entityId]) return 0;
-    const st = this._hass.states[entityId];
-    let val = parseFloat(st.state) || 0;
-    const uom = (st.attributes.unit_of_measurement || '').toLowerCase();
-    if (uom.includes('kw')) val *= 1000;
-    return val;
-  }
-
-  getDisplayVal(entityRef, defaultUnit = 'W', absolute = true) {
-    const entityId = this.getEntityId(entityRef);
-    if (!this._hass || !entityId || !this._hass.states[entityId]) return '0 W';
-    const st = this._hass.states[entityId];
-    let val = parseFloat(st.state) || 0;
-    if (absolute) val = Math.abs(val);
-    const uom = st.attributes.unit_of_measurement || defaultUnit;
-    if (Math.abs(val) >= 1000) {
-      return (val / 1000).toFixed(1) + ' kW';
-    }
-    return Math.round(val) + ' ' + uom;
-  }
-
-  getSocVal(entityRef) {
-    const entityId = this.getEntityId(entityRef);
-    if (!this._hass || !entityId || !this._hass.states[entityId]) return '';
-    const st = this._hass.states[entityId];
-    let val = Math.round(parseFloat(st.state) || 0);
-    return val + '%';
-  }
-
-  getActiveNodes() {
-    const entities = (this._config && this._config.entities) || {};
-
-    const gridEnt = entities.grid || 'sensor.myenergi_hub_11180810_power_grid';
-    const solarEnt = entities.solar || 'sensor.givtcp_fd2311g775_pv_power';
-    const homeEnt = entities.home || 'sensor.givtcp_fd2311g775_load_power';
-    const lowCarbonEnt = entities.fossil_fuel_percentage || 'sensor.electricity_maps_grid_fossil_fuel_percentage_2';
-
-    const batteries = Array.isArray(entities.batteries) ? entities.batteries : [];
-    const givConfig = batteries.find(b => b.id === 'givenergy') || entities.givenergy || {
-      entity: 'sensor.givtcp_fd2311g775_battery_power',
-      state_of_charge: 'sensor.givtcp_fd2311g775_soc'
-    };
-    const solixConfig = batteries.find(b => b.id === 'solix') || entities.solix || {
-      entity: 'sensor.solix_s2000_net_power',
-      state_of_charge: 'sensor.solix_s2000_state_of_charge',
-      ac_output: 'sensor.solix_s2000_ac_output_power'
-    };
-
-    const individual = Array.isArray(entities.individual) ? entities.individual : [];
-
-    const findIndiv = (keys, defaultEntity, defaultName, defaultIcon, defaultColor) => {
-      const found = individual.find(item => {
-        const id = (item.id || '').toLowerCase();
-        const name = (item.name || '').toLowerCase();
-        const ent = (item.entity || '').toLowerCase();
-        return keys.some(k => id === k || name.includes(k) || ent.includes(k));
-      });
-      if (found) {
-        return {
-          enabled: true,
-          entity: found.entity,
-          name: found.name || defaultName,
-          icon: this.getIconSymbol(found.icon, defaultIcon),
-          color: found.color ? (Array.isArray(found.color) ? `rgb(${found.color.join(',')})` : found.color) : defaultColor
-        };
-      }
-      return { enabled: false, entity: defaultEntity, name: defaultName, icon: defaultIcon, color: defaultColor };
-    };
-
-    const ashp = findIndiv(['ashp', 'heat pump', 'harvi'], 'sensor.myenergi_harvi_2151436_none_ct2', 'ASHP', '🌀', '#FF24BA');
-    const homelab = findIndiv(['homelab', 'ac_output_power', 'server'], 'sensor.solix_s2000_ac_output_power', 'Homelab', '🖥️', '#9C27B0');
-    const dryer = findIndiv(['dryer', 'tumble_dryer'], 'sensor.tumble_dryer_zigbee_power', 'Tumble Dryer', '♨️', '#FF9800');
-    const washer = findIndiv(['washer', 'washing_machine'], 'sensor.washing_machine_zigbee_power', 'Washing Machine', '🫧', '#2196F3');
-    const polestar = findIndiv(['polestar', 'ev', 'zappi'], 'sensor.myenergi_zappi_17111898_internal_load_ct1', 'Polestar', '🚗', '#07607E');
-    const tv = findIndiv(['tv', 'lounge_tv'], 'sensor.lounge_tv_power', 'Lounge TV', '📺', '#8BC34A');
-
-    return {
-      lowcarbon: { id: 'lowcarbon', label: (entities.fossil_fuel_percentage && entities.fossil_fuel_percentage.name) || 'Low Carbon', icon: this.getIconSymbol(entities.fossil_fuel_percentage?.icon, '🍃'), color: '#00C853', x: 35, y: 25, entity: lowCarbonEnt, enabled: true },
-      grid: { id: 'grid', label: (entities.grid && entities.grid.name) || 'Grid', icon: this.getIconSymbol(entities.grid?.icon, '🗼'), color: '#0288D1', x: 35, y: 170, entity: gridEnt, enabled: true },
-      solar: { id: 'solar', label: (entities.solar && entities.solar.name) || 'Solar', icon: this.getIconSymbol(entities.solar?.icon, '☀️'), color: '#FF9800', x: 175, y: 25, entity: solarEnt, enabled: true },
-      givenergy: { id: 'givenergy', label: givConfig.name || 'GivEnergy', icon: this.getIconSymbol(givConfig.icon, '🔋'), color: '#00BCD4', x: 175, y: 315, entity: givConfig.entity, socEntity: givConfig.state_of_charge, enabled: true },
-      ashp: { id: 'ashp', label: ashp.name, icon: ashp.icon, color: ashp.color, x: 315, y: 25, entity: ashp.entity, enabled: ashp.enabled },
-      home: { id: 'home', label: (entities.home && entities.home.name) || 'Home', icon: this.getIconSymbol(entities.home?.icon, '🏠'), color: '#FF9800', x: 315, y: 170, entity: homeEnt, isHome: true, enabled: true },
-      solix: { id: 'solix', label: solixConfig.name || 'Solix S2000', icon: this.getIconSymbol(solixConfig.icon, '🔋'), color: '#FFC107', x: 315, y: 315, entity: solixConfig.entity, socEntity: solixConfig.state_of_charge, enabled: true },
-      dryer: { id: 'dryer', label: dryer.name, icon: dryer.icon, color: dryer.color, x: 455, y: 25, entity: dryer.entity, enabled: dryer.enabled },
-      homelab: { id: 'homelab', label: homelab.name, icon: homelab.icon, color: homelab.color, x: 455, y: 315, entity: homelab.entity, enabled: homelab.enabled },
-      washer: { id: 'washer', label: washer.name, icon: washer.icon, color: washer.color, x: 595, y: 25, entity: washer.entity, enabled: washer.enabled },
-      polestar: { id: 'polestar', label: polestar.name, icon: polestar.icon, color: polestar.color, x: 595, y: 315, entity: polestar.entity, enabled: polestar.enabled },
-      lounge_tv: { id: 'lounge_tv', label: tv.name, icon: tv.icon, color: tv.color, x: 735, y: 315, entity: tv.entity, enabled: tv.enabled }
-    };
-  }
-
-  getPathD(cId, isReverse = false) {
-    const R = 48;
-    const hcX = 363;
-    const hcY = 218;
-
-    const gcX = 83;
-    const gcY = 218;
-
-    const scX = 223;
-    const scY = 73;
-
-    const givX = 223;
-    const givY = 363;
-
-    const getCircleEdgeX = (dy, isRightSide = true) => {
-      const dx = Math.sqrt(Math.max(0, R * R - dy * dy));
-      return isRightSide ? (hcX + dx) : (hcX - dx);
-    };
-
-    const getGridEdgeX = (dy) => {
-      const dx = Math.sqrt(Math.max(0, R * R - dy * dy));
-      return gcX + dx;
-    };
-
-    const getSolarBottomY = (x) => {
-      const dx = Math.abs(x - scX);
-      const dy = Math.sqrt(Math.max(0, R * R - dx * dx));
-      return scY + dy;
-    };
-
-    const getGivenergyTopY = (x) => {
-      const dx = Math.abs(x - givX);
-      const dy = Math.sqrt(Math.max(0, R * R - dx * dx));
-      return givY - dy;
-    };
-
-    const r = 14;
-
-    switch (cId) {
-      case 'lowcarbon-grid':
-        return `M 83 121 L 83 170`;
-
-      case 'grid-home': {
-        const dy = 0;
-        const gExitX = getGridEdgeX(dy);
-        const hEntryX = getCircleEdgeX(dy, false);
-        if (isReverse) {
-          return `M ${hEntryX} 218 L ${gExitX} 218`;
-        } else {
-          return `M ${gExitX} 218 L ${hEntryX} 218`;
-        }
-      }
-
-      case 'solar-home': {
-        const sExitY = getSolarBottomY(247);
-        const hEntryX = getCircleEdgeX(-24, false);
-        if (isReverse) {
-          return `M ${hEntryX.toFixed(2)} 194 L 261 194 Q 247 194, 247 180 L 247 ${sExitY.toFixed(2)}`;
-        } else {
-          return `M 247 ${sExitY.toFixed(2)} L 247 180 Q 247 194, 261 194 L ${hEntryX.toFixed(2)} 194`;
-        }
-      }
-
-      case 'solar-givenergy': {
-        const sExitY = getSolarBottomY(223);
-        const givEntryY = getGivenergyTopY(223);
-        if (isReverse) {
-          return `M 223 ${givEntryY.toFixed(2)} L 223 ${sExitY.toFixed(2)}`;
-        } else {
-          return `M 223 ${sExitY.toFixed(2)} L 223 ${givEntryY.toFixed(2)}`;
-        }
-      }
-
-      case 'solar-grid': {
-        const sExitY = getSolarBottomY(199);
-        const gEntryX = getGridEdgeX(-24);
-        if (isReverse) {
-          return `M ${gEntryX.toFixed(2)} 194 L 185 194 Q 199 194, 199 180 L 199 ${sExitY.toFixed(2)}`;
-        } else {
-          return `M 199 ${sExitY.toFixed(2)} L 199 180 Q 199 194, 185 194 L ${gEntryX.toFixed(2)} 194`;
-        }
-      }
-
-      case 'grid-givenergy': {
-        const givEntryY = getGivenergyTopY(199);
-        const gExitX = getGridEdgeX(24);
-        if (isReverse) {
-          return `M 199 ${givEntryY.toFixed(2)} L 199 256 Q 199 242, 185 242 L ${gExitX.toFixed(2)} 242`;
-        } else {
-          return `M ${gExitX.toFixed(2)} 242 L 185 242 Q 199 242, 199 256 L 199 ${givEntryY.toFixed(2)}`;
-        }
-      }
-
-      case 'givenergy-home': {
-        const givEntryY = getGivenergyTopY(247);
-        const hEntryX = getCircleEdgeX(24, false);
-        if (isReverse) {
-          return `M ${hEntryX.toFixed(2)} 242 L 261 242 Q 247 242, 247 256 L 247 ${givEntryY.toFixed(2)}`;
-        } else {
-          return `M 247 ${givEntryY.toFixed(2)} L 247 256 Q 247 242, 261 242 L ${hEntryX.toFixed(2)} 242`;
-        }
-      }
-
-      case 'home-ashp': {
-        return `M 363 170 L 363 121`;
-      }
-
-      case 'solix-home': {
-        if (isReverse) {
-          return `M 363 266 L 363 315`;
-        } else {
-          return `M 363 315 L 363 266`;
-        }
-      }
-
-      case 'solix-homelab': {
-        return `M 411 363 L 455 363`;
-      }
-
-      case 'home-dryer': {
-        const dy = -24;
-        const hExitX = getCircleEdgeX(dy, true);
-        const hExitY = hcY + dy;
-        const endX = 503;
-        const targetBottomY = 121;
-        return `M ${hExitX} ${hExitY} L ${endX - r} ${hExitY} Q ${endX} ${hExitY}, ${endX} ${hExitY - r} L ${endX} ${targetBottomY}`;
-      }
-
-      case 'home-washer': {
-        const dy = -12;
-        const hExitX = getCircleEdgeX(dy, true);
-        const hExitY = hcY + dy;
-        const endX = 643;
-        const targetBottomY = 121;
-        return `M ${hExitX} ${hExitY} L ${endX - r} ${hExitY} Q ${endX} ${hExitY}, ${endX} ${hExitY - r} L ${endX} ${targetBottomY}`;
-      }
-
-      case 'home-lounge_tv': {
-        const dy = 12;
-        const hExitX = getCircleEdgeX(dy, true);
-        const hExitY = hcY + dy;
-        const endX = 783;
-        const targetTopY = 315;
-        return `M ${hExitX} ${hExitY} L ${endX - r} ${hExitY} Q ${endX} ${hExitY}, ${endX} ${hExitY + r} L ${endX} ${targetTopY}`;
-      }
-
-      case 'home-polestar': {
-        const dy = 24;
-        const hExitX = getCircleEdgeX(dy, true);
-        const hExitY = hcY + dy;
-        const endX = 643;
-        const targetTopY = 315;
-        return `M ${hExitX} ${hExitY} L ${endX - r} ${hExitY} Q ${endX} ${hExitY}, ${endX} ${hExitY + r} L ${endX} ${targetTopY}`;
-      }
-
-      default:
-        return '';
-    }
-  }
-
-  syncLayout() {
-    const nodes = this.getActiveNodes();
-    const activeKeys = Object.keys(nodes).filter(k => nodes[k].enabled).join(',');
-
-    if (this._nodeKey === activeKeys && this.shadowRoot.querySelector('svg.power-svg')) return;
-    this._nodeKey = activeKeys;
-
-    const connections = [
-      { id: 'lowcarbon-grid', from: 'lowcarbon', to: 'grid', color: '#00C853' },
-      { id: 'grid-home', from: 'grid', to: 'home', color: '#0288D1' },
-      { id: 'solar-home', from: 'solar', to: 'home', color: '#FF9800' },
-      { id: 'solar-givenergy', from: 'solar', to: 'givenergy', color: '#00BCD4' },
-      { id: 'solar-grid', from: 'solar', to: 'grid', color: '#FF9800' },
-      { id: 'grid-givenergy', from: 'grid', to: 'givenergy', color: '#00BCD4' },
-      { id: 'givenergy-home', from: 'givenergy', to: 'home', color: '#00BCD4' },
-      { id: 'home-ashp', from: 'home', to: 'ashp', color: nodes.ashp.color },
-      { id: 'solix-home', from: 'solix', to: 'home', color: '#FFC107' },
-      { id: 'solix-homelab', from: 'solix', to: 'homelab', color: nodes.homelab.color },
-      { id: 'home-dryer', from: 'home', to: 'dryer', color: nodes.dryer.color },
-      { id: 'home-washer', from: 'home', to: 'washer', color: nodes.washer.color },
-      { id: 'home-lounge_tv', from: 'home', to: 'lounge_tv', color: nodes.lounge_tv.color },
-      { id: 'home-polestar', from: 'home', to: 'polestar', color: nodes.polestar.color }
-    ].filter(c => nodes[c.from]?.enabled && nodes[c.to]?.enabled);
-
-    let pathsHtml = '';
-    let dotsHtml = '';
-    connections.forEach(c => {
-      const initialD = this.getPathD(c.id, false);
-      pathsHtml += `<path id="path-${c.id}" d="${initialD}" stroke="${c.color}" stroke-width="2.8" fill="none" stroke-linecap="round"/>`;
-      dotsHtml += `<g id="dotgroup-${c.id}" style="display: none;"></g>`;
-    });
-
-    let nodesHtml = '';
-    Object.values(nodes).forEach(n => {
-      if (!n.enabled) return;
-      const isHome = n.isHome;
-      const borderCol = isHome ? '#00bcd4' : n.color;
-      const labelY = n.y < 100 ? -14 : 116;
-
-      nodesHtml += `
-        <g transform="translate(${n.x}, ${n.y})">
-          <circle cx="48" cy="48" r="46" fill="#0b0f19" stroke="${borderCol}" stroke-width="3.5" />
-          ${isHome ? `<circle cx="48" cy="48" r="41" fill="none" stroke="#ff9800" stroke-width="2.5"/>` : ''}
-          <text x="48" y="${labelY}" text-anchor="middle" fill="#cbd5e1" font-size="13.5" font-weight="700" font-family="system-ui, sans-serif">${n.label}</text>
-          <text id="soc-${n.id}" x="48" y="24" text-anchor="middle" fill="${n.color}" font-size="13.5" font-weight="800" font-family="system-ui, sans-serif"></text>
-          <text x="48" y="48" id="icon-${n.id}" text-anchor="middle" font-size="30" font-family="system-ui, apple color emoji, segoe ui emoji">${n.icon}</text>
-          <text id="val-${n.id}" x="48" y="72" text-anchor="middle" fill="#f1f5f9" font-size="13.5" font-weight="800" font-family="system-ui, sans-serif">${n.val || ''}</text>
-        </g>
-      `;
-    });
-
-    this.shadowRoot.innerHTML = `
-      <style>
-        :host {
-          display: block;
-          width: 100%;
-        }
-        ha-card {
-          background: #111827;
-          border-radius: 16px;
-          padding: 16px;
-          color: #f1f5f9;
-          font-family: system-ui, -apple-system, sans-serif;
-          width: 100% !important;
-          max-width: 100% !important;
-          margin: 0 auto;
-          box-sizing: border-box;
-          overflow: hidden;
-        }
-        .card-header {
-          font-size: 18px;
-          font-weight: 700;
-          color: #ffffff;
-          margin-bottom: 8px;
-          text-align: center;
-        }
-        .svg-wrapper {
-          width: 100%;
-          height: auto;
-          overflow: hidden;
-        }
-        svg.power-svg {
-          width: 100%;
-          height: auto;
-          display: block;
-          margin: 0 auto;
-          overflow: visible;
-        }
-      </style>
-      <ha-card>
-        <div class="card-header" id="cardTitle">${(this._config && this._config.title) || 'Power Flow Plus'}</div>
-        <div class="svg-wrapper">
-          <svg class="power-svg" viewBox="0 -18 850 456" preserveAspectRatio="xMidYMid meet">
-            ${pathsHtml}
-            ${dotsHtml}
-            ${nodesHtml}
-          </svg>
-        </div>
-      </ha-card>
-    `;
-  }
-
-  updateValues() {
-    if (!this.shadowRoot || !this._hass) return;
-
-    const nodes = this.getActiveNodes();
-
-    const rawGridW = this.parseWatts(nodes.grid.entity);
-    const isExportingGrid = rawGridW < 0;
-    const gridW = Math.abs(rawGridW);
-
-    const solarW = Math.abs(this.parseWatts(nodes.solar.entity));
-    const homeW = Math.abs(this.parseWatts(nodes.home.entity));
-
-    const givRaw = this.parseWatts(nodes.givenergy.entity);
-    const givStateStr = (this._hass?.states[nodes.givenergy.entity]?.state || '').toString();
-    const isGivCharging = givRaw < 0 || givStateStr.includes('-');
-    const givW = Math.abs(givRaw);
-    const givSoc = this.getSocVal(nodes.givenergy.socEntity);
-
-    const solarToGivW = isGivCharging ? Math.min(solarW, givW) : 0;
-    const remSolar = Math.max(0, solarW - solarToGivW);
-
-    const solarToGridW = isExportingGrid ? Math.min(remSolar, gridW) : 0;
-    const solarToHomeW = Math.max(0, remSolar - solarToGridW);
-
-    const gridToGivW = isGivCharging ? Math.max(0, givW - solarToGivW) : 0;
-    const givToGridW = (!isGivCharging && isExportingGrid) ? Math.min(givW, Math.max(0, gridW - solarToGridW)) : 0;
-
-    const gridToHomeW = isExportingGrid ? 0 : Math.max(0, gridW - gridToGivW);
-    const givToHomeW = !isGivCharging ? Math.max(0, givW - givToGridW) : 0;
-
-    const solixRaw = this.parseWatts(nodes.solix.entity);
-    const solixW = Math.abs(solixRaw);
-    const solixSoc = this.getSocVal(nodes.solix.socEntity);
-    const solixStateStr = (this._hass?.states[nodes.solix.entity]?.state || '').toString().toLowerCase();
-    const solixStatusStr = (this._hass?.states['sensor.solix_s2000_battery_status']?.state || '').toString().toLowerCase();
-    const solixAcInput = this.parseWatts('sensor.solix_s2000_ac_input_power');
-    const solixAcOutput = this.parseWatts('sensor.solix_s2000_ac_output_power');
-
-    const isSolixCharging = solixStatusStr === 'charging' ||
-                             solixStateStr === 'charging' ||
-                             (solixAcInput > 0 && solixAcInput > solixAcOutput) ||
-                             solixStateStr.includes('-') ||
-                             parseFloat(solixStateStr) < 0;
-
-    const homelabW = Math.abs(this.parseWatts(nodes.homelab.entity));
-    const ashpW = Math.abs(this.parseWatts(nodes.ashp.entity));
-    const polestarW = Math.abs(this.parseWatts(nodes.polestar.entity));
-    const dryerW = Math.abs(this.parseWatts(nodes.dryer.entity));
-    const washerW = Math.abs(this.parseWatts(nodes.washer.entity));
-    const tvW = Math.abs(this.parseWatts(nodes.lounge_tv.entity));
-
-    const nodeVals = {
-      lowcarbon: { val: this.getSocVal(nodes.lowcarbon.entity) || '86%' },
-      grid: { val: (isExportingGrid ? '← ' : '→ ') + this.getDisplayVal(nodes.grid.entity, 'W', true) },
-      solar: { val: this.getDisplayVal(nodes.solar.entity) },
-      givenergy: { val: (isGivCharging ? '↓ ' : (givW > 0 ? '↑ ' : '')) + this.getDisplayVal(nodes.givenergy.entity), soc: givSoc },
-      ashp: { val: this.getDisplayVal(nodes.ashp.entity, 'W', true) },
-      home: { val: this.getDisplayVal(nodes.home.entity) },
-      solix: { val: (isSolixCharging ? '↓ ' : (solixW > 0 ? '↑ ' : '')) + this.getDisplayVal(nodes.solix.entity), soc: solixSoc },
-      dryer: { val: this.getDisplayVal(nodes.dryer.entity) },
-      homelab: { val: this.getDisplayVal(nodes.homelab.entity) },
-      washer: { val: this.getDisplayVal(nodes.washer.entity) },
-      polestar: { val: this.getDisplayVal(nodes.polestar.entity) },
-      lounge_tv: { val: this.getDisplayVal(nodes.lounge_tv.entity) }
-    };
-
-    Object.keys(nodes).forEach(id => {
-      if (!nodes[id].enabled) return;
-      const data = nodeVals[id];
-      const valEl = this.shadowRoot.getElementById('val-' + id);
-      if (valEl && data) valEl.textContent = data.val;
-
-      const socEl = this.shadowRoot.getElementById('soc-' + id);
-      if (socEl && data) socEl.textContent = data.soc || '';
-
-      const iconEl = this.shadowRoot.getElementById('icon-' + id);
-      if (iconEl && data) {
-        iconEl.setAttribute('y', data.soc ? '54' : '48');
-      }
-    });
-
-    const connData = [
-      { id: 'lowcarbon-grid', color: '#00C853', watts: 100, isReverse: false },
-      { id: 'grid-home', color: '#0288D1', watts: gridToHomeW, isReverse: false },
-      { id: 'solar-home', color: '#FF9800', watts: solarToHomeW, isReverse: false },
-      { id: 'solar-givenergy', color: '#00BCD4', watts: solarToGivW, isReverse: false },
-      { id: 'solar-grid', color: '#FF9800', watts: solarToGridW, isReverse: false },
-      { id: 'grid-givenergy', color: '#00BCD4', watts: (gridToGivW > 0 ? gridToGivW : givToGridW), isReverse: (givToGridW > 0) },
-      { id: 'givenergy-home', color: '#00BCD4', watts: givToHomeW, isReverse: false },
-      { id: 'home-ashp', color: nodes.ashp.color, watts: ashpW, isReverse: false },
-      { id: 'solix-home', color: '#FFC107', watts: solixW, isReverse: isSolixCharging },
-      { id: 'solix-homelab', color: nodes.homelab.color, watts: homelabW, isReverse: false },
-      { id: 'home-dryer', color: nodes.dryer.color, watts: dryerW, isReverse: false },
-      { id: 'home-washer', color: nodes.washer.color, watts: washerW, isReverse: false },
-      { id: 'home-lounge_tv', color: nodes.lounge_tv.color, watts: tvW, isReverse: false },
-      { id: 'home-polestar', color: nodes.polestar.color, watts: polestarW, isReverse: false }
-    ].filter(c => nodes[c.id.split('-')[0]]?.enabled && nodes[c.id.split('-')[1]]?.enabled);
-
-    connData.forEach(c => {
-      const active = c.watts > 0 || c.id === 'lowcarbon-grid';
-      const groupEl = this.shadowRoot.getElementById('dotgroup-' + c.id);
-      const pathEl = this.shadowRoot.getElementById('path-' + c.id);
-
-      const d = this.getPathD(c.id, c.isReverse);
-
-      if (pathEl && pathEl.getAttribute('d') !== d) {
-        pathEl.setAttribute('d', d);
-      }
-
-      if (groupEl) {
-        groupEl.style.display = active ? 'block' : 'none';
-
-        if (active) {
-          const durVal = Math.max(0.8, Math.min(5.5, (2400 / Math.max(c.watts, 10)))).toFixed(2);
-          const durStr = durVal + 's';
-          const halfDurStr = '-' + (durVal / 2).toFixed(2) + 's';
-
-          const currentD = groupEl.getAttribute('data-path');
-          const currentDur = groupEl.getAttribute('data-dur');
-
-          if (currentD !== d || !currentDur || Math.abs(parseFloat(currentDur) - parseFloat(durVal)) > 0.5) {
-            groupEl.setAttribute('data-path', d);
-            groupEl.setAttribute('data-dur', durVal);
-
-            groupEl.innerHTML = `
-              <circle r="4.8" fill="${c.color}">
-                <animateMotion path="${d}" dur="${durStr}" repeatCount="indefinite" calcMode="linear" />
-              </circle>
-              <circle r="4.8" fill="${c.color}">
-                <animateMotion path="${d}" dur="${durStr}" begin="${halfDurStr}" repeatCount="indefinite" calcMode="linear" />
-              </circle>
-            `;
-          }
-        }
-      }
-    });
-  }
-
-  static getConfigElement() {
-    return document.createElement('multi-power-flow-card-editor');
-  }
-
-  static getStubConfig() {
-    return {
-      title: 'Power Flow Plus',
-      entities: {
-        grid: 'sensor.myenergi_hub_11180810_power_grid',
-        solar: 'sensor.givtcp_fd2311g775_pv_power',
-        home: 'sensor.givtcp_fd2311g775_load_power',
-        fossil_fuel_percentage: 'sensor.electricity_maps_grid_fossil_fuel_percentage_2',
-        givenergy: {
-          entity: 'sensor.givtcp_fd2311g775_battery_power',
-          state_of_charge: 'sensor.givtcp_fd2311g775_soc'
-        },
-        solix: {
-          entity: 'sensor.solix_s2000_net_power',
-          state_of_charge: 'sensor.solix_s2000_state_of_charge',
-          ac_output: 'sensor.solix_s2000_ac_output_power'
-        }
-      }
-    };
-  }
+  syncLayout(force=false){const n=this._nodes(),key=n.map(x=>[x.id,x.entity,x.label,x.color,x.icon,x.x,x.y].join('|')).join(';');if(!force&&key===this._key&&this.shadowRoot.querySelector('svg'))return;this._key=key;const c=this._cfg,conn=this._connections(),maxX=Math.max(850,...n.map(x=>x.x+110)),maxY=Math.max(455,...n.map(x=>x.y+125));let paths='',dots='',nodes='';conn.forEach(x=>{const a=n.find(z=>z.id===x.from),b=n.find(z=>z.id===x.to);if(!a||!b)return;const d=this._path(a,b);paths+=`<path id="p-${this._esc(x.id)}" d="${d}" stroke="${this._esc(x.color)}" stroke-width="${Number(c.appearance.line_width)||2.8}" fill="none" stroke-linecap="round" opacity=".75"/>`;dots+=`<g id="d-${this._esc(x.id)}" style="display:none"></g>`;});n.forEach(x=>{const soc=x.type==='battery'?this._soc(x.soc_entity):null;nodes+=`<g transform="translate(${x.x},${x.y})"><circle cx="48" cy="48" r="46" fill="#0b0f19" stroke="${this._esc(x.home?'#00BCD4':x.color)}" stroke-width="3.5"/>${x.home?'<circle cx="48" cy="48" r="41" fill="none" stroke="#FF9800" stroke-width="2.5"/>':''}<text x="48" y="${x.y<100?-14:116}" text-anchor="middle" fill="#cbd5e1" font-size="13.5" font-weight="700" font-family="system-ui">${this._esc(x.label)}</text><text id="s-${this._esc(x.id)}" x="48" y="24" text-anchor="middle" fill="${this._esc(x.color)}" font-size="13.5" font-weight="800">${c.display.show_soc!==false&&soc!==null?soc+'%':''}</text><text id="i-${this._esc(x.id)}" x="48" y="${soc!==null?'54':'48'}" text-anchor="middle" font-size="30">${c.display.show_icons===false?'':this._esc(x.icon)}</text><text id="v-${this._esc(x.id)}" x="48" y="72" text-anchor="middle" fill="#f1f5f9" font-size="13.5" font-weight="800"></text></g>`;});this.shadowRoot.innerHTML=`<style>:host{display:block;width:100%}ha-card{background:${this._esc(c.appearance.background)};border-radius:${Number(c.appearance.border_radius)||16}px;padding:16px;color:#f1f5f9;font-family:system-ui,sans-serif;box-sizing:border-box;overflow:hidden}.title{display:${c.display.show_title===false?'none':'block'};font-size:18px;font-weight:700;text-align:center;margin-bottom:8px}.wrap{width:100%;overflow:auto}svg{width:100%;min-width:640px;height:auto;display:block}</style><ha-card><div class="title">${this._esc(c.title)}</div><div class="wrap"><svg viewBox="0 -20 ${maxX+20} ${maxY+20}" preserveAspectRatio="xMidYMid meet">${paths}${dots}${nodes}</svg></div></ha-card>`;}
+  _animate(x){const g=this.shadowRoot.getElementById(`d-${x.id}`),p=this.shadowRoot.getElementById(`p-${x.id}`),n=this._nodes(),a=n.find(z=>z.id===x.from),b=n.find(z=>z.id===x.to);if(!g||!p||!a||!b)return;const d=this._path(a,b);p.setAttribute('d',d);const active=x.watts>=(Number(this._cfg.flow.minimum_power)||10);g.style.display=active?'block':'none';if(!active||this._cfg.flow.animate===false){g.innerHTML='';return;}const dur=Math.max(.55,Math.min(6,2400/Math.max(x.watts,10)/(Number(this._cfg.flow.animation_speed)||1))).toFixed(2)+'s';if(g.dataset.d===d&&g.dataset.t===dur)return;g.dataset.d=d;g.dataset.t=dur;const rev=x.reverse?' keyPoints="1;0" keyTimes="0;1"':'';g.innerHTML=`<circle r="4.8" fill="${this._esc(x.color)}"><animateMotion path="${d}" dur="${dur}" repeatCount="indefinite" calcMode="linear"${rev}/></circle><circle r="4.8" fill="${this._esc(x.color)}"><animateMotion path="${d}" dur="${dur}" begin="-${(parseFloat(dur)/2).toFixed(2)}s" repeatCount="indefinite" calcMode="linear"${rev}/></circle>`;}
+  updateValues(){if(!this._hass)return;this.syncLayout();const c=this._cfg,n=this._nodes();n.forEach(x=>{const v=this.shadowRoot.getElementById(`v-${x.id}`),s=this.shadowRoot.getElementById(`s-${x.id}`);if(v)v.textContent=c.display.show_values===false?'':((x.id==='grid'?(this._power(x)<0?'← ':'→ '):x.type==='battery'?(this._power(x)<0?'↓ ':this._power(x)>0?'↑ ':''):'')+this._display(x));if(x.type==='battery'&&s)s.textContent=c.display.show_soc!==false&&this._soc(x.soc_entity)!==null?this._soc(x.soc_entity)+'%':'';if(x.id==='lowcarbon'&&s){const q=Number.parseFloat(this._state(x.entity)?.state);s.textContent=Number.isFinite(q)?Math.round(q)+'%':'';}});this._connections().forEach(x=>this._animate(x));}
 }
 
 class MultiPowerFlowCardEditor extends HTMLElement {
-  constructor() {
-    super();
-    this.attachShadow({ mode: 'open' });
-  }
-
-  setConfig(config) {
-    this._config = config || {};
-    this.render();
-  }
-
-  set hass(hass) {
-    this._hass = hass;
-  }
-
-  _valueChanged(ev) {
-    if (!this._config) return;
-    const target = ev.target;
-    const path = target.getAttribute('data-path');
-    if (!path) return;
-
-    const value = ev.target.value;
-    const newConfig = JSON.parse(JSON.stringify(this._config));
-
-    const parts = path.split('.');
-    let curr = newConfig;
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!curr[parts[i]]) curr[parts[i]] = {};
-      curr = curr[parts[i]];
-    }
-    curr[parts[parts.length - 1]] = value;
-
-    this.dispatchEvent(new CustomEvent('config-changed', {
-      detail: { config: newConfig },
-      bubbles: true,
-      composed: true
-    }));
-  }
-
-  render() {
-    if (!this._config) return;
-    const entities = this._config.entities || {};
-
-    const getEntVal = (field) => {
-      if (typeof field === 'string') return field;
-      if (typeof field === 'object' && field) return field.entity || '';
-      return '';
-    };
-
-    const title = this._config.title || 'Power Flow Plus';
-    const grid = getEntVal(entities.grid);
-    const solar = getEntVal(entities.solar);
-    const home = getEntVal(entities.home);
-    const fossil = getEntVal(entities.fossil_fuel_percentage);
-
-    const givPower = entities.givenergy?.entity || (typeof entities.givenergy === 'string' ? entities.givenergy : '');
-    const givSoc = entities.givenergy?.state_of_charge || '';
-
-    const solixPower = entities.solix?.entity || (typeof entities.solix === 'string' ? entities.solix : '');
-    const solixSoc = entities.solix?.state_of_charge || '';
-
-    this.shadowRoot.innerHTML = `
-      <style>
-        :host {
-          display: block;
-          padding: 8px;
-          font-family: system-ui, -apple-system, sans-serif;
-          color: var(--primary-text-color, #fff);
-        }
-        .section {
-          margin-bottom: 16px;
-          background: var(--card-background-color, #1f2937);
-          padding: 12px 16px;
-          border-radius: 8px;
-          border: 1px solid var(--divider-color, #374151);
-        }
-        .section-title {
-          font-weight: 700;
-          font-size: 14px;
-          margin-bottom: 10px;
-          color: var(--primary-color, #00bcd4);
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-        }
-        .form-row {
-          display: flex;
-          flex-direction: column;
-          margin-bottom: 10px;
-        }
-        label {
-          font-size: 12px;
-          margin-bottom: 4px;
-          color: var(--secondary-text-color, #9ca3af);
-        }
-        input {
-          padding: 8px 10px;
-          background: var(--input-background-color, #111827);
-          border: 1px solid var(--divider-color, #4b5563);
-          border-radius: 6px;
-          color: #fff;
-          font-size: 13px;
-        }
-        input:focus {
-          outline: none;
-          border-color: var(--primary-color, #00bcd4);
-        }
-      </style>
-      <div class="card-config">
-        <div class="section">
-          <div class="section-title">General Settings</div>
-          <div class="form-row">
-            <label>Card Title</label>
-            <input type="text" data-path="title" value="${title}" />
-          </div>
-        </div>
-
-        <div class="section">
-          <div class="section-title">Main Power Entities</div>
-          <div class="form-row">
-            <label>Grid Entity ID</label>
-            <input type="text" data-path="entities.grid" value="${grid}" />
-          </div>
-          <div class="form-row">
-            <label>Solar Entity ID</label>
-            <input type="text" data-path="entities.solar" value="${solar}" />
-          </div>
-          <div class="form-row">
-            <label>Home Load Entity ID</label>
-            <input type="text" data-path="entities.home" value="${home}" />
-          </div>
-          <div class="form-row">
-            <label>Low Carbon / Fossil Fuel Entity ID</label>
-            <input type="text" data-path="entities.fossil_fuel_percentage" value="${fossil}" />
-          </div>
-        </div>
-
-        <div class="section">
-          <div class="section-title">Battery Entities</div>
-          <div class="form-row">
-            <label>GivEnergy Power Entity</label>
-            <input type="text" data-path="entities.givenergy.entity" value="${givPower}" />
-          </div>
-          <div class="form-row">
-            <label>GivEnergy SOC Entity</label>
-            <input type="text" data-path="entities.givenergy.state_of_charge" value="${givSoc}" />
-          </div>
-          <div class="form-row">
-            <label>Solix Power Entity</label>
-            <input type="text" data-path="entities.solix.entity" value="${solixPower}" />
-          </div>
-          <div class="form-row">
-            <label>Solix SOC Entity</label>
-            <input type="text" data-path="entities.solix.state_of_charge" value="${solixSoc}" />
-          </div>
-        </div>
-      </div>
-    `;
-
-    this.shadowRoot.querySelectorAll('input').forEach(input => {
-      input.addEventListener('change', (e) => this._valueChanged(e));
-      input.addEventListener('input', (e) => this._valueChanged(e));
-    });
-  }
+  constructor(){super();this.attachShadow({mode:'open'});this._config=null;this._hass=null;}
+  setConfig(c){this._config=normaliseConfig(c||{});this._render();}
+  set hass(h){this._hass=h;this._render();}
+  _esc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
+  _opts(sel,empty=true){const st=this._hass?.states||{},ids=Object.keys(st).filter(x=>x.startsWith('sensor.')||x.startsWith('number.')).sort();let h=empty?'<option value="">— None / disabled —</option>':'';ids.forEach(id=>h+=`<option value="${this._esc(id)}" ${id===sel?'selected':''}>${this._esc(st[id]?.attributes?.friendly_name||id)} — ${this._esc(id)}</option>`);if(sel&&!ids.includes(sel))h+=`<option selected value="${this._esc(sel)}">${this._esc(sel)} (configured)</option>`;return h;}
+  _emit(c){this._config=normaliseConfig(c);this.dispatchEvent(new CustomEvent('config-changed',{detail:{config:this._config},bubbles:true,composed:true}));this._render();}
+  _render(){if(!this._config||!this._hass)return;const c=this._config,field=(id,label,n,d)=>`<div class="core"><b>${label}</b><label>Entity</label><select id="${id}_entity">${this._opts(n?.entity||'',true)}</select><label>Name</label><input id="${id}_name" value="${this._esc(n?.name||'')}" placeholder="${d.name}"><label>Icon</label><input id="${id}_icon" value="${this._esc(n?.icon||'')}" placeholder="${d.icon}"><label>Colour</label><input id="${id}_color" value="${this._esc(n?.color||'')}" placeholder="${d.color}"><label>Invert</label><select id="${id}_invert"><option value="false" ${!n?.invert?'selected':''}>No</option><option value="true" ${n?.invert?'selected':''}>Yes</option></select></div>`;const item=(type,n,i)=>`<div class="item"><b>${type==='battery'?(n.name||`Battery ${i+1}`):(n.name||`Device ${i+1}`)}</b><button data-remove="${type}:${i}">Remove</button><label>ID</label><input data-f="id" value="${this._esc(n.id||'')}"><label>Power entity</label><select data-f="entity">${this._opts(n.entity||'',false)}</select>${type==='battery'?`<label>SOC entity</label><select data-f="soc_entity">${this._opts(n.soc_entity||'',true)}</select><label>Status entity</label><select data-f="status_entity">${this._opts(n.status_entity||'',true)}</select>`:''}<label>Name</label><input data-f="name" value="${this._esc(n.name||'')}"><label>Icon</label><input data-f="icon" value="${this._esc(n.icon||'')}" placeholder="${type==='battery'?'mdi:battery':'mdi:flash'}"><label>Colour</label><input data-f="color" value="${this._esc(n.color||'')}"><label>Invert</label><select data-f="invert"><option value="false" ${!n.invert?'selected':''}>No</option><option value="true" ${n.invert?'selected':''}>Yes</option></select><label>Enabled</label><select data-f="enabled"><option value="true" ${n.enabled!==false?'selected':''}>Yes</option><option value="false" ${n.enabled===false?'selected':''}>No</option></select></div>`;this.shadowRoot.innerHTML=`<style>:host{display:block;padding:16px;color:var(--primary-text-color);font-family:system-ui,sans-serif}.sec{border:1px solid var(--divider-color);border-radius:12px;padding:14px;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.items{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.core,.item{border:1px solid var(--divider-color);border-radius:10px;padding:12px}label{display:block;font-size:12px;margin:7px 0 3px;opacity:.8}input,select{width:100%;box-sizing:border-box;padding:7px;border-radius:7px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color)}button{float:right;border:0;border-radius:7px;padding:6px 9px;background:var(--error-color);color:#fff;cursor:pointer}.add{float:none;background:var(--primary-color);margin-top:10px}.title{font-size:15px;font-weight:700;margin-bottom:10px}</style><div class="sec"><div class="title">General</div><label>Title</label><input id="title" value="${this._esc(c.title)}"></div><div class="sec"><div class="title">Core sensors</div><div class="grid">${field('grid','Grid',c.core.grid,MPFC_DEFAULTS.core.grid)}${field('solar','Solar',c.core.solar,MPFC_DEFAULTS.core.solar)}${field('home','Home',c.core.home,MPFC_DEFAULTS.core.home)}${field('low_carbon','Low Carbon',c.core.low_carbon,MPFC_DEFAULTS.core.low_carbon)}</div></div><div class="sec"><div class="title">Batteries</div><div class="items">${c.batteries.map((x,i)=>item('battery',x,i)).join('')}</div><button class="add" id="addBattery">+ Add battery</button></div><div class="sec"><div class="title">Devices</div><div class="items">${c.devices.map((x,i)=>item('device',x,i)).join('')}</div><button class="add" id="addDevice">+ Add device</button></div>`;this.shadowRoot.querySelectorAll('input,select').forEach(e=>{e.addEventListener('change',()=>this._read());e.addEventListener('input',()=>this._read());});this.shadowRoot.querySelectorAll('[data-remove]').forEach(b=>b.addEventListener('click',()=>{const [t,i]=b.dataset.remove.split(':');const key=t==='battery'?'batteries':'devices';this._emit({...c,[key]:c[key].filter((_,j)=>j!==Number(i))});}));this.shadowRoot.getElementById('addBattery')?.addEventListener('click',()=>this._emit({...c,batteries:[...c.batteries,{id:`battery_${c.batteries.length+1}`,entity:'',soc_entity:'',name:'',icon:'mdi:battery',color:'#00BCD4',invert:false,enabled:true}]}));this.shadowRoot.getElementById('addDevice')?.addEventListener('click',()=>this._emit({...c,devices:[...c.devices,{id:`device_${c.devices.length+1}`,entity:'',name:'',icon:'mdi:flash',color:'#9C27B0',invert:false,enabled:true}]}));}
+  _read(){const c=clone(this._config);c.title=this.shadowRoot.getElementById('title')?.value||'Power Flow';['grid','solar','home','low_carbon'].forEach(id=>c.core[id]={...c.core[id],entity:this.shadowRoot.getElementById(`${id}_entity`)?.value||'',name:this.shadowRoot.getElementById(`${id}_name`)?.value||'',icon:this.shadowRoot.getElementById(`${id}_icon`)?.value||'',color:this.shadowRoot.getElementById(`${id}_color`)?.value||'',invert:this.shadowRoot.getElementById(`${id}_invert`)?.value==='true'});['batteries','devices'].forEach(key=>{c[key]=[...this.shadowRoot.querySelectorAll(`.item`)].filter(x=>x.querySelector('[data-f="status_entity"]')!==null=== (key==='batteries')).map(x=>{const v=f=>x.querySelector(`[data-f="${f}"]`)?.value||'';const o={id:v('id'),entity:v('entity'),name:v('name'),icon:v('icon'),color:v('color'),invert:v('invert')==='true',enabled:v('enabled')!=='false'};if(key==='batteries'){o.soc_entity=v('soc_entity');o.status_entity=v('status_entity');}return o;});});this._emit(c);}
 }
 
-if (!customElements.get('multi-power-flow-card')) {
-  customElements.define('multi-power-flow-card', MultiPowerFlowCard);
-}
-if (!customElements.get('multi-power-flow-card-v2')) {
-  customElements.define('multi-power-flow-card-v2', MultiPowerFlowCard);
-}
-if (!customElements.get('multi-power-flow-card-editor')) {
-  customElements.define('multi-power-flow-card-editor', MultiPowerFlowCardEditor);
-}
-
-window.customCards = window.customCards || [];
-if (!window.customCards.some(c => c.type === 'multi-power-flow-card')) {
-  window.customCards.push({
-    type: 'multi-power-flow-card',
-    name: 'Multi Power Flow Card',
-    description: 'A custom power flow card with Solix S2000 & GivEnergy dual-battery layout and multi-device support.',
-    preview: true
-  });
-}
+if(!customElements.get('multi-power-flow-card'))customElements.define('multi-power-flow-card',MultiPowerFlowCard);
+if(!customElements.get('multi-power-flow-card-editor'))customElements.define('multi-power-flow-card-editor',MultiPowerFlowCardEditor);
+window.customCards=window.customCards||[];
+if(!window.customCards.some(c=>c.type==='multi-power-flow-card'))window.customCards.push({type:'multi-power-flow-card',name:'Multi Power Flow Card',description:'Generic configurable Home Assistant power-flow card.',preview:true,documentationURL:'https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card/'});
