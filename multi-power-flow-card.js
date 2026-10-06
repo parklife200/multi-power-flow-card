@@ -1,120 +1,504 @@
-/* Multi Power Flow Card v2 - generic/shareable Home Assistant custom card */
-
-const MPFC_DEFAULTS = {
-  title: 'Power Flow',
-  core: {
-    grid: { name: 'Grid', icon: 'mdi:transmission-tower', color: '#0288D1', invert: false },
-    solar: { name: 'Solar', icon: 'mdi:solar-power', color: '#FF9800', invert: false },
-    home: { name: 'Home', icon: 'mdi:home', color: '#00BCD4', invert: false },
-    low_carbon: { name: 'Low Carbon', icon: 'mdi:leaf', color: '#00C853', invert: false },
-  },
-  battery: { name: 'Battery', icon: 'mdi:battery', color: '#00BCD4', invert: false },
-  device: { name: 'Device', icon: 'mdi:flash', color: '#9C27B0', invert: false },
-  display: { show_title: true, show_values: true, show_soc: true, show_icons: true, show_zero_values: false },
-  flow: { animate: true, animation_speed: 1, minimum_power: 10 },
-  appearance: { background: '#111827', border_radius: 16, node_size: 48, line_width: 2.8 },
-};
-
-const MPFC_EMOJI = {
-  'mdi:transmission-tower':'🗼','mdi:solar-power':'☀️','mdi:home':'🏠','mdi:leaf':'🍃',
-  'mdi:battery':'🔋','mdi:battery-high':'🔋','mdi:battery-charging-100':'🔋','mdi:flash':'⚡',
-  'mdi:heat-pump':'🌀','mdi:server-network':'🖥️','mdi:car-electric':'🚗','mdi:ev-station':'🔌',
-  'mdi:tumble-dryer':'♨️','mdi:washing-machine':'🫧','mdi:television':'📺','mdi:dishwasher':'🍽️'
-};
-
-const clone = v => v == null ? v : JSON.parse(JSON.stringify(v));
-const entityId = v => typeof v === 'string' ? v : (v && typeof v.entity === 'string' ? v.entity : '');
-function merge(a,b) {
-  const r=clone(a)||{};
-  Object.entries(b||{}).forEach(([k,v])=>{
-    if(v && typeof v==='object'&&!Array.isArray(v)&&r[k]&&typeof r[k]==='object'&&!Array.isArray(r[k])) r[k]=merge(r[k],v);
-    else r[k]=clone(v);
-  }); return r;
-}
-function node(v, defaults) { return merge(defaults, typeof v==='string'?{entity:v}:v||{}); }
-
-// Converts the original entities.* format into the new generic format.
-function migrateLegacyConfig(c) {
-  if (!c || typeof c !== 'object') return {};
-  if (c.core || Array.isArray(c.batteries) || Array.isArray(c.devices)) return clone(c);
-  const e=c.entities||{};
-  const out={title:c.title||'Power Flow',core:{
-    grid:node(e.grid,MPFC_DEFAULTS.core.grid), solar:node(e.solar,MPFC_DEFAULTS.core.solar),
-    home:node(e.home,MPFC_DEFAULTS.core.home), low_carbon:node(e.fossil_fuel_percentage,MPFC_DEFAULTS.core.low_carbon)
-  },batteries:[],devices:[]};
-  const battery=(v,id,name,icon,color)=>{
-    if(!v)return null; const b=typeof v==='string'?{entity:v}:v; const ent=entityId(b.entity); if(!ent)return null;
-    return {id:b.id||id,entity:ent,soc_entity:entityId(b.soc_entity||b.state_of_charge),status_entity:entityId(b.status_entity||b.status),
-      name:b.name||name,icon:b.icon||icon,color:b.color||color,invert:!!b.invert,enabled:b.enabled!==false};
-  };
-  (Array.isArray(e.batteries)?e.batteries:[]).forEach((b,i)=>{const x=battery(b,b.id||`battery_${i+1}`,b.name||'Battery',b.icon||'mdi:battery',b.color||'#00BCD4');if(x)out.batteries.push(x);});
-  const g=battery(e.givenergy,'givenergy','GivEnergy','mdi:battery','#00BCD4');
-  const s=battery(e.solix,'solix','Solix','mdi:battery','#FFC107');
-  if(g&&!out.batteries.some(x=>x.id===g.id))out.batteries.push(g);
-  if(s&&!out.batteries.some(x=>x.id===s.id))out.batteries.push(s);
-  (Array.isArray(e.individual)?e.individual:[]).forEach((d,i)=>{if(d&&d.entity)out.devices.push({id:d.id||`device_${i+1}`,entity:d.entity,name:d.name||'Device',icon:d.icon||'mdi:flash',color:d.color||'#9C27B0',invert:!!d.invert,enabled:d.enabled!==false,position:d.position||'auto'});});
-  return out;
-}
-function normaliseConfig(c) {
-  const m=migrateLegacyConfig(c||{});
-  const r=merge({title:'Power Flow',core:{grid:null,solar:null,home:null,low_carbon:null},batteries:[],devices:[],display:MPFC_DEFAULTS.display,flow:MPFC_DEFAULTS.flow,appearance:MPFC_DEFAULTS.appearance},m);
-  Object.keys(r.core).forEach(k=>{if(r.core[k]!=null){r.core[k]=merge(MPFC_DEFAULTS.core[k],r.core[k]);r.core[k].entity=entityId(r.core[k].entity);r.core[k].enabled=!!r.core[k].entity;}});
-  r.batteries=(Array.isArray(r.batteries)?r.batteries:[]).map((b,i)=>{const x=merge(MPFC_DEFAULTS.battery,b||{});return {...x,id:x.id||`battery_${i+1}`,entity:entityId(x.entity),soc_entity:entityId(x.soc_entity),status_entity:entityId(x.status_entity),enabled:x.enabled!==false&&!!entityId(x.entity),invert:!!x.invert};});
-  r.devices=(Array.isArray(r.devices)?r.devices:[]).map((d,i)=>{const x=merge(MPFC_DEFAULTS.device,d||{});return {...x,id:x.id||`device_${i+1}`,entity:entityId(x.entity),enabled:x.enabled!==false&&!!entityId(x.entity),invert:!!x.invert,position:x.position||'auto'};});
-  return r;
-}
+/* Multi Power Flow Card - generic/shareable Home Assistant custom card */
 
 class MultiPowerFlowCard extends HTMLElement {
-  constructor(){super();this.attachShadow({mode:'open'});this._config={};this._cfg=normaliseConfig({});this._key='';}
-  setConfig(c){if(!c||typeof c!=='object')throw new Error('Invalid configuration');this._config=c;this._cfg=normaliseConfig(c);if(this._hass){this.syncLayout(true);this.updateValues();}}
-  set hass(h){this._hass=h;if(!this.shadowRoot.querySelector('svg'))this.syncLayout(true);this.updateValues();}
-  getCardSize(){return Math.max(5,4+Math.ceil(this._cfg.batteries.length/3)+Math.ceil(this._cfg.devices.length/4));}
-  getGridOptions(){return {rows:this.getCardSize(),columns:9,min_rows:5,min_columns:6};}
-  static getConfigElement(){return document.createElement('multi-power-flow-card-editor');}
-  static getStubConfig(){return {title:'Power Flow',core:{grid:{entity:''},solar:{entity:''},home:{entity:''},low_carbon:{entity:''}},batteries:[],devices:[]};}
-
-  _state(id){return id?this._hass?.states?.[id]:null;}
-  _raw(id){const s=this._state(id);let n=Number.parseFloat(s?.state);if(!Number.isFinite(n))return 0;return String(s?.attributes?.unit_of_measurement||'').toLowerCase().includes('kw')?n*1000:n;}
-  _power(n){const v=this._raw(n?.entity);return n?.invert?-v:v;}
-  _soc(id){const n=Number.parseFloat(this._state(id)?.state);return Number.isFinite(n)?Math.max(0,Math.min(100,Math.round(n))):null;}
-  _display(n){let v=Math.abs(this._power(n));if(v>=1000)return `${(v/1000).toFixed(1)} kW`;return `${Math.round(v)} ${this._state(n.entity)?.attributes?.unit_of_measurement||'W'}`;}
-  _name(n,fallback){return n?.name||this._state(n?.entity)?.attributes?.friendly_name||fallback;}
-  _icon(n,fallback){const i=n?.icon||fallback;return i?.startsWith('mdi:')?(MPFC_EMOJI[i]||'⚡'):i;}
-  _esc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
-
-  _handleNodeClick(ent){if(ent)this.dispatchEvent(new CustomEvent('hass-more-info',{detail:{entityId:ent},bubbles:true,composed:true}));}
-  _nodes(){const c=this._cfg,n=[];
-    [['lowcarbon',c.core.low_carbon,65,40,'Low Carbon'],['grid',c.core.grid,65,205,'Grid'],['solar',c.core.solar,235,40,'Solar'],['home',c.core.home,405,205,'Home']].forEach(([id,x,px,py,f])=>{if(x?.enabled)n.push({id,...x,x:px,y:py,label:this._name(x,f),icon:this._icon(x,MPFC_DEFAULTS.core[id==='lowcarbon'?'low_carbon':id].icon),home:id==='home'});});
-    c.batteries.filter(x=>x.enabled).forEach((b,i)=>{n.push({id:`battery:${b.id}`,type:'battery',batteryId:b.id,...b,x:235+(i%3)*170,y:365+Math.floor(i/3)*135,label:this._name(b,b.name||'Battery'),icon:this._icon(b,'mdi:battery')});});
-    c.devices.filter(x=>x.enabled).forEach((d,i)=>{n.push({id:`device:${d.id}`,type:'device',deviceId:d.id,...d,x:575+(i%4)*150,y:40+Math.floor(i/4)*135,label:this._name(d,d.name||'Device'),icon:this._icon(d,'mdi:flash')});});return n;
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    this._initialized = false;
+    this._nodeKey = '';
   }
-  _path(a,b){const r=48,fx=a.x+r,fy=a.y+r,tx=b.x+r,ty=b.y+r,dx=tx-fx,dy=ty-fy,len=Math.max(1,Math.hypot(dx,dy)),ux=dx/len,uy=dy/len,sx=fx+ux*r,sy=fy+uy*r,ex=tx-ux*r,ey=ty-uy*r;if(Math.abs(dx)>Math.abs(dy)*1.3){const mx=(sx+ex)/2;return `M${sx.toFixed(1)} ${sy.toFixed(1)} C${mx.toFixed(1)} ${sy.toFixed(1)},${mx.toFixed(1)} ${ey.toFixed(1)},${ex.toFixed(1)} ${ey.toFixed(1)}`;}const my=(sy+ey)/2,bend=Math.min(55,Math.max(18,len*.18));return `M${sx.toFixed(1)} ${sy.toFixed(1)} C${sx.toFixed(1)} ${(my-bend*Math.sign(dy)).toFixed(1)},${ex.toFixed(1)} ${(my+bend*Math.sign(dy)).toFixed(1)},${ex.toFixed(1)} ${ey.toFixed(1)}`;}
-  _connections(){const c=this._cfg,n=this._nodes(),by=id=>n.find(x=>x.id===id),out=[];const grid=by('grid'),solar=by('solar'),home=by('home');
-    if(by('lowcarbon')&&grid)out.push({id:'lowcarbon-grid',from:'lowcarbon',to:'grid',watts:1,color:c.core.low_carbon.color,reverse:false});
-    if(grid&&home){const p=this._power(c.core.grid);out.push({id:'grid-home',from:'grid',to:'home',watts:Math.abs(p),color:c.core.grid.color,reverse:p<0});}
-    if(solar&&home)out.push({id:'solar-home',from:'solar',to:'home',watts:Math.max(0,this._power(c.core.solar)),color:c.core.solar.color,reverse:false});
-    c.batteries.filter(b=>b.enabled).forEach(b=>{const id=`battery:${b.id}`;if(!by(id))return;const p=this._power(b);if(home)out.push({id:p>=0?`${id}-home`:`home-${id}`,from:p>=0?id:'home',to:p>=0?'home':id,watts:Math.abs(p),color:b.color,reverse:false});});
-    c.devices.filter(d=>d.enabled).forEach(d=>{const id=`device:${d.id}`;if(home&&by(id))out.push({id:`home-${id}`,from:'home',to:id,watts:Math.abs(this._power(d)),color:d.color,reverse:false});});return out;
+
+  setConfig(config) {
+    if (!config) {
+      throw new Error("Invalid configuration");
+    }
+    this._config = config;
+    if (this._hass) {
+      this.syncLayout();
+      this.updateValues();
+    }
   }
-  syncLayout(force=false){const n=this._nodes(),key=n.map(x=>[x.id,x.entity,x.label,x.color,x.icon,x.x,x.y].join('|')).join(';');if(!force&&key===this._key&&this.shadowRoot.querySelector('svg'))return;this._key=key;const c=this._cfg,conn=this._connections(),maxX=Math.max(850,...n.map(x=>x.x+110)),maxY=Math.max(455,...n.map(x=>x.y+125));let paths='',dots='',nodes='';conn.forEach(x=>{const a=n.find(z=>z.id===x.from),b=n.find(z=>z.id===x.to);if(!a||!b)return;const d=this._path(a,b);paths+=`<path id="p-${this._esc(x.id)}" d="${d}" stroke="${this._esc(x.color)}" stroke-width="${Number(c.appearance.line_width)||2.8}" fill="none" stroke-linecap="round" opacity=".75"/>`;dots+=`<g id="d-${this._esc(x.id)}" style="display:none"></g>`;});n.forEach(x=>{const soc=x.type==='battery'?this._soc(x.soc_entity):null;nodes+=`<g transform="translate(${x.x},${x.y})" class="node-group" data-entity="${this._esc(x.entity||'')}"><circle cx="48" cy="48" r="46" fill="#0b0f19" stroke="${this._esc(x.home?'#00BCD4':x.color)}" stroke-width="3.5"/>${x.home?'<circle cx="48" cy="48" r="41" fill="none" stroke="#FF9800" stroke-width="2.5"/>':''}<text x="48" y="${x.y<100?-14:116}" text-anchor="middle" fill="#cbd5e1" font-size="13.5" font-weight="700" font-family="system-ui">${this._esc(x.label)}</text><text id="s-${this._esc(x.id)}" x="48" y="24" text-anchor="middle" fill="${this._esc(x.color)}" font-size="13.5" font-weight="800">${c.display.show_soc!==false&&soc!==null?soc+'%':''}</text><text id="i-${this._esc(x.id)}" x="48" y="${soc!==null?'54':'48'}" text-anchor="middle" font-size="30">${c.display.show_icons===false?'':this._esc(x.icon)}</text><text id="v-${this._esc(x.id)}" x="48" y="72" text-anchor="middle" fill="#f1f5f9" font-size="13.5" font-weight="800"></text></g>`;});this.shadowRoot.innerHTML=`<style>:host{display:block;width:100%}ha-card{background:${this._esc(c.appearance.background)};border-radius:${Number(c.appearance.border_radius)||16}px;padding:16px;color:#f1f5f9;font-family:system-ui,sans-serif;box-sizing:border-box;overflow:hidden}.title{display:${c.display.show_title===false?'none':'block'};font-size:18px;font-weight:700;text-align:center;margin-bottom:8px}.wrap{width:100%;overflow:auto}svg{width:100%;min-width:640px;height:auto;display:block}.node-group{cursor:pointer}</style><ha-card><div class="title">${this._esc(c.title)}</div><div class="wrap"><svg viewBox="0 -20 ${maxX+20} ${maxY+20}" preserveAspectRatio="xMidYMid meet">${paths}${dots}${nodes}</svg></div></ha-card>`;this.shadowRoot.querySelectorAll('.node-group').forEach(el=>el.addEventListener('click',()=>this._handleNodeClick(el.getAttribute('data-entity'))));}
-  _animate(x){const g=this.shadowRoot.getElementById(`d-${x.id}`),p=this.shadowRoot.getElementById(`p-${x.id}`),n=this._nodes(),a=n.find(z=>z.id===x.from),b=n.find(z=>z.id===x.to);if(!g||!p||!a||!b)return;const d=this._path(a,b);p.setAttribute('d',d);const active=x.watts>=(Number(this._cfg.flow.minimum_power)||10);g.style.display=active?'block':'none';if(!active||this._cfg.flow.animate===false){g.innerHTML='';return;}const dur=Math.max(.55,Math.min(6,2400/Math.max(x.watts,10)/(Number(this._cfg.flow.animation_speed)||1))).toFixed(2)+'s';if(g.dataset.d===d&&g.dataset.t===dur)return;g.dataset.d=d;g.dataset.t=dur;const rev=x.reverse?' keyPoints="1;0" keyTimes="0;1"':'';g.innerHTML=`<circle r="4.8" fill="${this._esc(x.color)}"><animateMotion path="${d}" dur="${dur}" repeatCount="indefinite" calcMode="linear"${rev}/></circle><circle r="4.8" fill="${this._esc(x.color)}"><animateMotion path="${d}" dur="${dur}" begin="-${(parseFloat(dur)/2).toFixed(2)}s" repeatCount="indefinite" calcMode="linear"${rev}/></circle>`;}
-  updateValues(){if(!this._hass)return;this.syncLayout();const c=this._cfg,n=this._nodes();n.forEach(x=>{const v=this.shadowRoot.getElementById(`v-${x.id}`),s=this.shadowRoot.getElementById(`s-${x.id}`);if(v)v.textContent=c.display.show_values===false?'':((x.id==='grid'?(this._power(x)<0?'← ':'→ '):x.type==='battery'?(this._power(x)<0?'↓ ':this._power(x)>0?'↑ ':''):'')+this._display(x));if(x.type==='battery'&&s)s.textContent=c.display.show_soc!==false&&this._soc(x.soc_entity)!==null?this._soc(x.soc_entity)+'%':'';if(x.id==='lowcarbon'&&s){const q=Number.parseFloat(this._state(x.entity)?.state);s.textContent=Number.isFinite(q)?Math.round(q)+'%':'';}});this._connections().forEach(x=>this._animate(x));}
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._initialized) {
+      this.syncLayout();
+      this._initialized = true;
+    }
+    this.updateValues();
+  }
+
+  getCardSize() {
+    return 5;
+  }
+
+  getGridOptions() {
+    return { rows: 5, columns: 4, min_columns: 3 };
+  }
+
+  static getLayoutOptions() {
+    return { grid_rows: 5, grid_columns: 4, grid_min_columns: 3 };
+  }
+
+  // Home Assistant Native UI Card Visual Form Editor (Native HA Entity Pickers)
+  static getConfigForm() {
+    const sensor = (name, label, helper) => ({
+      name,
+      selector: { entity: { filter: { domain: 'sensor' } } },
+      computeLabel: () => label,
+      computeHelper: () => helper
+    });
+
+    return {
+      schema: [
+        {
+          name: 'title',
+          selector: { text: {} },
+          computeLabel: () => 'Card Title'
+        },
+        {
+          type: 'expandable',
+          name: 'core',
+          title: '⚡ Core Sensors',
+          flatten: true,
+          schema: [
+            sensor('grid', 'Grid Power Sensor', 'Positive = import, negative = export (W or kW).'),
+            sensor('solar', 'Solar Generation Sensor', 'PV power generation (W or kW).'),
+            sensor('home', 'Home Load Sensor', 'Total household load power (W or kW).'),
+            sensor('fossil_fuel_percentage', 'Low Carbon / Grid Fossil Fuel %', 'Grid intensity or green power %.')
+          ]
+        },
+        {
+          type: 'expandable',
+          name: 'battery1',
+          title: '🔋 Battery 1 (Main Battery)',
+          flatten: true,
+          schema: [
+            sensor('battery1_power', 'Battery 1 Power Sensor', 'Power sensor (positive = discharge, negative = charge).'),
+            sensor('battery1_soc', 'Battery 1 State of Charge', 'State of charge percentage (0-100%).')
+          ]
+        },
+        {
+          type: 'expandable',
+          name: 'battery2',
+          title: '🔋 Battery 2 (Secondary Battery)',
+          flatten: true,
+          schema: [
+            sensor('battery2_power', 'Battery 2 Power Sensor', 'Power sensor.'),
+            sensor('battery2_soc', 'Battery 2 State of Charge', 'State of charge percentage.')
+          ]
+        },
+        {
+          type: 'expandable',
+          name: 'devices',
+          title: '🔌 Appliances & Individual Loads',
+          flatten: true,
+          schema: [
+            sensor('ashp', 'Heat Pump / Heating', 'Leave empty if not installed.'),
+            sensor('homelab', 'Homelab / Server', 'Leave empty if not installed.'),
+            sensor('dryer', 'Tumble Dryer', 'Leave empty if not installed.'),
+            sensor('washer', 'Washing Machine', 'Leave empty if not installed.'),
+            sensor('polestar', 'EV Charger', 'Leave empty if not installed.'),
+            sensor('lounge_tv', 'TV / Entertainment', 'Leave empty if not installed.')
+          ]
+        },
+        {
+          type: 'expandable',
+          name: 'options',
+          title: '⚙️ Options',
+          flatten: true,
+          schema: [
+            {
+              name: 'kw_threshold',
+              selector: { number: { min: 100, max: 10000, step: 100, unit_of_measurement: 'W' } },
+              computeLabel: () => 'kW Conversion Threshold',
+              computeHelper: () => 'Values above this threshold display in kW (default 1000 W).'
+            },
+            {
+              name: 'hide_inactive_nodes',
+              selector: { boolean: {} },
+              computeLabel: () => 'Hide Unconfigured Nodes',
+              computeHelper: () => 'Hide load or battery nodes that have no sensor assigned.'
+            }
+          ]
+        }
+      ],
+      computeHelper: (schema) => schema.name === 'title' ? 'Title shown at top of the card.' : undefined
+    };
+  }
+
+  _handleNodeClick(entityId) {
+    if (!entityId) return;
+    this.dispatchEvent(new CustomEvent('hass-more-info', {
+      detail: { entityId: entityId },
+      bubbles: true,
+      composed: true
+    }));
+  }
+
+  getEntityId(obj) {
+    if (!obj) return null;
+    if (typeof obj === 'string') return obj;
+    if (typeof obj === 'object' && obj.entity) return obj.entity;
+    return null;
+  }
+
+  getIconSymbol(icon, defaultEmoji) {
+    if (!icon) return defaultEmoji;
+    if (typeof icon === 'string' && !icon.startsWith('mdi:')) return icon;
+    const map = {
+      'mdi:leaf': '🍃',
+      'mdi:transmission-tower': '🗼',
+      'mdi:solar-power': '☀️',
+      'mdi:battery-high': '🔋',
+      'mdi:battery-charging-100': '🔋',
+      'mdi:home': '🏠',
+      'mdi:heat-pump': '🌀',
+      'mdi:server-network': '🖥️',
+      'mdi:car-electric': '🚗',
+      'mdi:tumble-dryer': '♨️',
+      'mdi:washing-machine': '🫧',
+      'mdi:television': '📺'
+    };
+    return map[icon] || defaultEmoji;
+  }
+
+  parseWatts(entityRef) {
+    const entityId = this.getEntityId(entityRef);
+    if (!this._hass || !entityId || !this._hass.states[entityId]) return 0;
+    const st = this._hass.states[entityId];
+    let val = parseFloat(st.state) || 0;
+    const uom = (st.attributes.unit_of_measurement || '').toLowerCase();
+    if (uom.includes('kw')) val *= 1000;
+    return val;
+  }
+
+  getDisplayVal(entityRef, defaultUnit = 'W', absolute = true) {
+    const entityId = this.getEntityId(entityRef);
+    if (!this._hass || !entityId || !this._hass.states[entityId]) return '0 W';
+    const st = this._hass.states[entityId];
+    let val = parseFloat(st.state) || 0;
+    if (absolute) val = Math.abs(val);
+    const uom = st.attributes.unit_of_measurement || defaultUnit;
+    const kwThreshold = (this._config && this._config.kw_threshold) || 1000;
+
+    if (Math.abs(val) >= kwThreshold) {
+      return (val / 1000).toFixed(1) + ' kW';
+    }
+    return Math.round(val) + ' ' + uom;
+  }
+
+  getSocVal(entityRef) {
+    const entityId = this.getEntityId(entityRef);
+    if (!this._hass || !entityId || !this._hass.states[entityId]) return '';
+    const st = this._hass.states[entityId];
+    const val = Math.round(parseFloat(st.state) || 0);
+    return val + '%';
+  }
+
+  _configEntity(key, legacyPath, fallbackEntity = null) {
+    const v = this._config?.[key];
+    if (typeof v === 'string') return v;
+    if (v && typeof v === 'object' && v.entity) return v.entity;
+    if (typeof legacyPath === 'string') return legacyPath;
+    if (legacyPath && typeof legacyPath === 'object' && legacyPath.entity) return legacyPath.entity;
+    return fallbackEntity;
+  }
+
+  getActiveNodes() {
+    const entities = (this._config && this._config.entities) || {};
+    const core = (this._config && this._config.core) || {};
+
+    const gridEnt = this._configEntity('grid', core.grid || entities.grid);
+    const solarEnt = this._configEntity('solar', core.solar || entities.solar);
+    const homeEnt = this._configEntity('home', core.home || entities.home);
+    const lowCarbonEnt = this._configEntity('fossil_fuel_percentage', core.low_carbon || entities.fossil_fuel_percentage);
+
+    const batteries = Array.isArray(this._config?.batteries) ? this._config.batteries : (Array.isArray(entities.batteries) ? entities.batteries : []);
+    const b1Config = batteries[0] || entities.givenergy || {};
+    const b2Config = batteries[1] || entities.solix || {};
+
+    const b1Power = this._configEntity('battery1_power', b1Config.entity || this._configEntity('givenergy_entity', null));
+    const b1Soc = this._configEntity('battery1_soc', b1Config.soc_entity || b1Config.state_of_charge || this._configEntity('givenergy_soc', null));
+
+    const b2Power = this._configEntity('battery2_power', b2Config.entity || this._configEntity('solix_entity', null));
+    const b2Soc = this._configEntity('battery2_soc', b2Config.soc_entity || b2Config.state_of_charge || this._configEntity('solix_soc', null));
+
+    const individual = Array.isArray(this._config?.devices) ? this._config.devices : (Array.isArray(entities.individual) ? entities.individual : []);
+
+    const findIndiv = (keys, cfgKey, defaultName, defaultIcon, defaultColor) => {
+      const explicit = this._configEntity(cfgKey, null);
+      if (explicit) {
+        return { enabled: true, entity: explicit, name: defaultName, icon: defaultIcon, color: defaultColor };
+      }
+      const found = individual.find(item => {
+        if (!item || typeof item !== 'object') return false;
+        const id = (item.id || '').toLowerCase();
+        const name = (item.name || '').toLowerCase();
+        const ent = (item.entity || '').toLowerCase();
+        return keys.some(k => id === k || name.includes(k) || ent.includes(k));
+      });
+
+      if (found) {
+        return {
+          enabled: !!found.entity,
+          entity: found.entity,
+          name: found.name || defaultName,
+          icon: this.getIconSymbol(found.icon, defaultIcon),
+          color: found.color ? (Array.isArray(found.color) ? `rgb(${found.color.join(',')})` : found.color) : defaultColor
+        };
+      }
+      return { enabled: false, entity: null, name: defaultName, icon: defaultIcon, color: defaultColor };
+    };
+
+    const ashp = findIndiv(['ashp', 'heat pump', 'harvi'], 'ashp', 'Heat Pump', '🌀', '#FF24BA');
+    const homelab = findIndiv(['homelab', 'server'], 'homelab', 'Homelab', '🖥️', '#9C27B0');
+    const dryer = findIndiv(['dryer', 'tumble_dryer'], 'dryer', 'Tumble Dryer', '♨️', '#FF9800');
+    const washer = findIndiv(['washer', 'washing_machine'], 'washer', 'Washing Machine', '🫧', '#2196F3');
+    const polestar = findIndiv(['polestar', 'ev', 'zappi'], 'polestar', 'EV Charger', '🚗', '#07607E');
+    const tv = findIndiv(['tv', 'lounge_tv'], 'lounge_tv', 'TV', '📺', '#8BC34A');
+
+    const hideInactive = !!this._config?.hide_inactive_nodes;
+
+    return {
+      lowcarbon: { id: 'lowcarbon', label: 'Low Carbon', icon: '🍃', color: '#00C853', x: 35, y: 25, entity: lowCarbonEnt, enabled: hideInactive ? !!lowCarbonEnt : true },
+      grid: { id: 'grid', label: 'Grid', icon: '🗼', color: '#0288D1', x: 35, y: 170, entity: gridEnt, enabled: true },
+      solar: { id: 'solar', label: 'Solar', icon: '☀️', color: '#FF9800', x: 175, y: 25, entity: solarEnt, enabled: hideInactive ? !!solarEnt : true },
+      givenergy: { id: 'givenergy', label: b1Config.name || 'Battery 1', icon: '🔋', color: '#00BCD4', x: 175, y: 315, entity: b1Power, socEntity: b1Soc, enabled: hideInactive ? !!b1Power : true },
+      ashp: { id: 'ashp', label: ashp.name, icon: ashp.icon, color: ashp.color, x: 315, y: 25, entity: ashp.entity, enabled: ashp.enabled },
+      home: { id: 'home', label: 'Home', icon: '🏠', color: '#FF9800', x: 315, y: 170, entity: homeEnt, isHome: true, enabled: true },
+      solix: { id: 'solix', label: b2Config.name || 'Battery 2', icon: '🔋', color: '#FFC107', x: 315, y: 315, entity: b2Power, socEntity: b2Soc, enabled: hideInactive ? !!b2Power : true },
+      dryer: { id: 'dryer', label: dryer.name, icon: dryer.icon, color: dryer.color, x: 455, y: 25, entity: dryer.entity, enabled: dryer.enabled },
+      homelab: { id: 'homelab', label: homelab.name, icon: homelab.icon, color: homelab.color, x: 455, y: 315, entity: homelab.entity, enabled: homelab.enabled },
+      washer: { id: 'washer', label: washer.name, icon: washer.icon, color: washer.color, x: 595, y: 25, entity: washer.entity, enabled: washer.enabled },
+      polestar: { id: 'polestar', label: polestar.name, icon: polestar.icon, color: polestar.color, x: 595, y: 315, entity: polestar.entity, enabled: polestar.enabled },
+      lounge_tv: { id: 'lounge_tv', label: tv.name, icon: tv.icon, color: tv.color, x: 735, y: 315, entity: tv.entity, enabled: tv.enabled }
+    };
+  }
+
+  getPathD(cId, isReverse = false) {
+    const R = 48, hcX = 363, hcY = 218, gcX = 83, scX = 223, scY = 73, givX = 223, givY = 363, r = 14;
+    const getCircleEdgeX = (dy, right = true) => hcX + (right ? 1 : -1) * Math.sqrt(Math.max(0, R * R - dy * dy));
+    const getGridEdgeX = (dy) => gcX + Math.sqrt(Math.max(0, R * R - dy * dy));
+    const getSolarBottomY = (x) => scY + Math.sqrt(Math.max(0, R * R - Math.pow(x - scX, 2)));
+    const getGivenergyTopY = (x) => givY - Math.sqrt(Math.max(0, R * R - Math.pow(x - givX, 2)));
+
+    switch (cId) {
+      case 'lowcarbon-grid': return `M 83 121 L 83 170`;
+      case 'grid-home': return isReverse ? `M ${getCircleEdgeX(0, false)} 218 L ${getGridEdgeX(0)} 218` : `M ${getGridEdgeX(0)} 218 L ${getCircleEdgeX(0, false)} 218`;
+      case 'solar-home': return isReverse ? `M ${getCircleEdgeX(-24, false).toFixed(2)} 194 L 261 194 Q 247 194, 247 180 L 247 ${getSolarBottomY(247).toFixed(2)}` : `M 247 ${getSolarBottomY(247).toFixed(2)} L 247 180 Q 247 194, 261 194 L ${getCircleEdgeX(-24, false).toFixed(2)} 194`;
+      case 'solar-givenergy': return isReverse ? `M 223 ${getGivenergyTopY(223).toFixed(2)} L 223 ${getSolarBottomY(223).toFixed(2)}` : `M 223 ${getSolarBottomY(223).toFixed(2)} L 223 ${getGivenergyTopY(223).toFixed(2)}`;
+      case 'solar-grid': return isReverse ? `M ${getGridEdgeX(-24).toFixed(2)} 194 L 185 194 Q 199 194, 199 180 L 199 ${getSolarBottomY(199).toFixed(2)}` : `M 199 ${getSolarBottomY(199).toFixed(2)} L 199 180 Q 199 194, 185 194 L ${getGridEdgeX(-24).toFixed(2)} 194`;
+      case 'grid-givenergy': return isReverse ? `M 199 ${getGivenergyTopY(199).toFixed(2)} L 199 256 Q 199 242, 185 242 L ${getGridEdgeX(24).toFixed(2)} 242` : `M ${getGridEdgeX(24).toFixed(2)} 242 L 185 242 Q 199 242, 199 256 L 199 ${getGivenergyTopY(199).toFixed(2)}`;
+      case 'givenergy-home': return isReverse ? `M ${getCircleEdgeX(24, false).toFixed(2)} 242 L 261 242 Q 247 242, 247 256 L 247 ${getGivenergyTopY(247).toFixed(2)}` : `M 247 ${getGivenergyTopY(247).toFixed(2)} L 247 256 Q 247 242, 261 242 L ${getCircleEdgeX(24, false).toFixed(2)} 242`;
+      case 'home-ashp': return `M 363 170 L 363 121`;
+      case 'solix-home': return isReverse ? `M 363 266 L 363 315` : `M 363 315 L 363 266`;
+      case 'solix-homelab': return `M 411 363 L 455 363`;
+      case 'home-dryer': return `M ${getCircleEdgeX(-24, true)} ${hcY - 24} L 489 ${hcY - 24} Q 503 ${hcY - 24}, 503 ${hcY - 24 - r} L 503 121`;
+      case 'home-washer': return `M ${getCircleEdgeX(-12, true)} ${hcY - 12} L 629 ${hcY - 12} Q 643 ${hcY - 12}, 643 ${hcY - 12 - r} L 643 121`;
+      case 'home-lounge_tv': return `M ${getCircleEdgeX(12, true)} ${hcY + 12} L 769 ${hcY + 12} Q 783 ${hcY + 12}, 783 ${hcY + 12 + r} L 783 315`;
+      case 'home-polestar': return `M ${getCircleEdgeX(24, true)} ${hcY + 24} L 629 ${hcY + 24} Q 643 ${hcY + 24}, 643 ${hcY + 24 + r} L 643 315`;
+      default: return '';
+    }
+  }
+
+  syncLayout() {
+    const nodes = this.getActiveNodes();
+    const activeKeys = Object.keys(nodes).filter(k => nodes[k].enabled).join(',');
+    if (this._nodeKey === activeKeys && this.shadowRoot.querySelector('svg.power-svg')) return;
+    this._nodeKey = activeKeys;
+
+    const connections = [
+      { id: 'lowcarbon-grid', from: 'lowcarbon', to: 'grid', color: '#00C853' },
+      { id: 'grid-home', from: 'grid', to: 'home', color: '#0288D1' },
+      { id: 'solar-home', from: 'solar', to: 'home', color: '#FF9800' },
+      { id: 'solar-givenergy', from: 'solar', to: 'givenergy', color: '#00BCD4' },
+      { id: 'solar-grid', from: 'solar', to: 'grid', color: '#FF9800' },
+      { id: 'grid-givenergy', from: 'grid', to: 'givenergy', color: '#00BCD4' },
+      { id: 'givenergy-home', from: 'givenergy', to: 'home', color: '#00BCD4' },
+      { id: 'home-ashp', from: 'home', to: 'ashp', color: nodes.ashp.color },
+      { id: 'solix-home', from: 'solix', to: 'home', color: '#FFC107' },
+      { id: 'solix-homelab', from: 'solix', to: 'homelab', color: nodes.homelab.color },
+      { id: 'home-dryer', from: 'home', to: 'dryer', color: nodes.dryer.color },
+      { id: 'home-washer', from: 'home', to: 'washer', color: nodes.washer.color },
+      { id: 'home-lounge_tv', from: 'home', to: 'lounge_tv', color: nodes.lounge_tv.color },
+      { id: 'home-polestar', from: 'home', to: 'polestar', color: nodes.polestar.color }
+    ].filter(c => nodes[c.from]?.enabled && nodes[c.to]?.enabled);
+
+    let pathsHtml = '', dotsHtml = '';
+    connections.forEach(c => {
+      pathsHtml += `<path id="path-${c.id}" d="${this.getPathD(c.id, false)}" stroke="${c.color}" stroke-width="2.8" fill="none" stroke-linecap="round"/>`;
+      dotsHtml += `<g id="dotgroup-${c.id}" style="display: none;"></g>`;
+    });
+
+    let nodesHtml = '';
+    Object.values(nodes).forEach(n => {
+      if (!n.enabled) return;
+      const borderCol = n.isHome ? '#00bcd4' : n.color;
+      nodesHtml += `
+        <g transform="translate(${n.x}, ${n.y})" class="node-group" data-entity="${n.entity || ''}">
+          <circle cx="48" cy="48" r="46" fill="#0b0f19" stroke="${borderCol}" stroke-width="3.5" />
+          ${n.isHome ? `<circle cx="48" cy="48" r="41" fill="none" stroke="#ff9800" stroke-width="2.5"/>` : ''}
+          <text x="48" y="${n.y < 100 ? -14 : 116}" text-anchor="middle" fill="#cbd5e1" font-size="13.5" font-weight="700">${n.label}</text>
+          <text id="soc-${n.id}" x="48" y="24" text-anchor="middle" fill="${n.color}" font-size="13.5" font-weight="800"></text>
+          <text x="48" y="48" id="icon-${n.id}" text-anchor="middle" font-size="30">${n.icon}</text>
+          <text id="val-${n.id}" x="48" y="72" text-anchor="middle" fill="#f1f5f9" font-size="13.5" font-weight="800"></text>
+        </g>
+      `;
+    });
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; width: 100%; }
+        ha-card { background: #111827; border-radius: 16px; padding: 16px; color: #f1f5f9; font-family: system-ui, sans-serif; overflow: hidden; }
+        .card-header { font-size: 18px; font-weight: 700; color: #ffffff; margin-bottom: 8px; text-align: center; }
+        .svg-wrapper { width: 100%; overflow: hidden; }
+        svg.power-svg { width: 100%; display: block; overflow: visible; }
+        .node-group { cursor: pointer; }
+      </style>
+      <ha-card>
+        <div class="card-header">${(this._config && this._config.title) || 'Multi Power Flow'}</div>
+        <div class="svg-wrapper">
+          <svg class="power-svg" viewBox="0 -18 850 456" preserveAspectRatio="xMidYMid meet">
+            ${pathsHtml}${dotsHtml}${nodesHtml}
+          </svg>
+        </div>
+      </ha-card>
+    `;
+
+    this.shadowRoot.querySelectorAll('.node-group').forEach(el => {
+      el.addEventListener('click', () => this._handleNodeClick(el.getAttribute('data-entity')));
+    });
+  }
+
+  updateValues() {
+    if (!this.shadowRoot || !this._hass) return;
+    const nodes = this.getActiveNodes();
+
+    const rawGridW = this.parseWatts(nodes.grid.entity);
+    const isExportingGrid = rawGridW < 0;
+    const gridW = Math.abs(rawGridW);
+    const solarW = Math.abs(this.parseWatts(nodes.solar.entity));
+
+    const b1Raw = this.parseWatts(nodes.givenergy.entity);
+    const isB1Charging = b1Raw < 0;
+    const b1W = Math.abs(b1Raw);
+
+    const solarToB1W = isB1Charging ? Math.min(solarW, b1W) : 0;
+    const remSolar = Math.max(0, solarW - solarToB1W);
+
+    const solarToGridW = isExportingGrid ? Math.min(remSolar, gridW) : 0;
+    const solarToHomeW = Math.max(0, remSolar - solarToGridW);
+
+    const gridToB1W = isB1Charging ? Math.max(0, b1W - solarToB1W) : 0;
+    const b1ToGridW = (!isB1Charging && isExportingGrid) ? Math.min(b1W, Math.max(0, gridW - solarToGridW)) : 0;
+
+    const gridToHomeW = isExportingGrid ? 0 : Math.max(0, gridW - gridToB1W);
+    const b1ToHomeW = !isB1Charging ? Math.max(0, b1W - b1ToGridW) : 0;
+
+    const b2Raw = this.parseWatts(nodes.solix.entity);
+    const b2W = Math.abs(b2Raw);
+    const isB2Charging = b2Raw < 0;
+
+    const homelabW = Math.abs(this.parseWatts(nodes.homelab.entity));
+    const ashpW = Math.abs(this.parseWatts(nodes.ashp.entity));
+    const polestarW = Math.abs(this.parseWatts(nodes.polestar.entity));
+    const dryerW = Math.abs(this.parseWatts(nodes.dryer.entity));
+    const washerW = Math.abs(this.parseWatts(nodes.washer.entity));
+    const tvW = Math.abs(this.parseWatts(nodes.lounge_tv.entity));
+
+    const nodeVals = {
+      lowcarbon: { val: nodes.lowcarbon.entity ? (this.getSocVal(nodes.lowcarbon.entity) || '86%') : '' },
+      grid: { val: (isExportingGrid ? '← ' : '→ ') + (nodes.grid.entity ? this.getDisplayVal(nodes.grid.entity, 'W', true) : '0 W') },
+      solar: { val: nodes.solar.entity ? this.getDisplayVal(nodes.solar.entity) : '0 W' },
+      givenergy: { val: nodes.givenergy.entity ? ((isB1Charging ? '↓ ' : '↑ ') + this.getDisplayVal(nodes.givenergy.entity)) : '0 W', soc: this.getSocVal(nodes.givenergy.socEntity) },
+      ashp: { val: nodes.ashp.entity ? this.getDisplayVal(nodes.ashp.entity, 'W', true) : '' },
+      home: { val: nodes.home.entity ? this.getDisplayVal(nodes.home.entity) : '0 W' },
+      solix: { val: nodes.solix.entity ? ((isB2Charging ? '↓ ' : '↑ ') + this.getDisplayVal(nodes.solix.entity)) : '0 W', soc: this.getSocVal(nodes.solix.socEntity) },
+      dryer: { val: nodes.dryer.entity ? this.getDisplayVal(nodes.dryer.entity) : '' },
+      homelab: { val: nodes.homelab.entity ? this.getDisplayVal(nodes.homelab.entity) : '' },
+      washer: { val: nodes.washer.entity ? this.getDisplayVal(nodes.washer.entity) : '' },
+      polestar: { val: nodes.polestar.entity ? this.getDisplayVal(nodes.polestar.entity) : '' },
+      lounge_tv: { val: nodes.lounge_tv.entity ? this.getDisplayVal(nodes.lounge_tv.entity) : '' }
+    };
+
+    Object.keys(nodes).forEach(id => {
+      if (!nodes[id].enabled) return;
+      const data = nodeVals[id];
+      const valEl = this.shadowRoot.getElementById('val-' + id);
+      if (valEl && data) valEl.textContent = data.val;
+      const socEl = this.shadowRoot.getElementById('soc-' + id);
+      if (socEl && data) socEl.textContent = data.soc || '';
+      const iconEl = this.shadowRoot.getElementById('icon-' + id);
+      if (iconEl && data) iconEl.setAttribute('y', data.soc ? '54' : '48');
+    });
+
+    const connData = [
+      { id: 'lowcarbon-grid', color: '#00C853', watts: nodes.lowcarbon.entity ? 100 : 0, isReverse: false },
+      { id: 'grid-home', color: '#0288D1', watts: gridToHomeW, isReverse: false },
+      { id: 'solar-home', color: '#FF9800', watts: solarToHomeW, isReverse: false },
+      { id: 'solar-givenergy', color: '#00BCD4', watts: solarToB1W, isReverse: false },
+      { id: 'solar-grid', color: '#FF9800', watts: solarToGridW, isReverse: false },
+      { id: 'grid-givenergy', color: '#00BCD4', watts: (gridToGivW > 0 ? gridToGivW : b1ToGridW), isReverse: (b1ToGridW > 0) },
+      { id: 'givenergy-home', color: '#00BCD4', watts: b1ToHomeW, isReverse: false },
+      { id: 'home-ashp', color: nodes.ashp.color, watts: ashpW, isReverse: false },
+      { id: 'solix-home', color: '#FFC107', watts: b2W, isReverse: isB2Charging },
+      { id: 'solix-homelab', color: nodes.homelab.color, watts: homelabW, isReverse: false },
+      { id: 'home-dryer', color: nodes.dryer.color, watts: dryerW, isReverse: false },
+      { id: 'home-washer', color: nodes.washer.color, watts: washerW, isReverse: false },
+      { id: 'home-lounge_tv', color: nodes.lounge_tv.color, watts: tvW, isReverse: false },
+      { id: 'home-polestar', color: nodes.polestar.color, watts: polestarW, isReverse: false }
+    ].filter(c => nodes[c.id.split('-')[0]]?.enabled && nodes[c.id.split('-')[1]]?.enabled);
+
+    connData.forEach(c => {
+      const active = c.watts > 0 || c.id === 'lowcarbon-grid';
+      const groupEl = this.shadowRoot.getElementById('dotgroup-' + c.id);
+      const pathEl = this.shadowRoot.getElementById('path-' + c.id);
+      const d = this.getPathD(c.id, c.isReverse);
+
+      if (pathEl && pathEl.getAttribute('d') !== d) pathEl.setAttribute('d', d);
+
+      if (groupEl) {
+        groupEl.style.display = active ? 'block' : 'none';
+        if (active) {
+          const durVal = Math.max(0.8, Math.min(5.5, (2400 / Math.max(c.watts, 10)))).toFixed(2);
+          const durStr = durVal + 's';
+          if (groupEl.getAttribute('data-path') !== d || groupEl.getAttribute('data-dur') !== durVal) {
+            groupEl.setAttribute('data-path', d);
+            groupEl.setAttribute('data-dur', durVal);
+            groupEl.innerHTML = `
+              <circle r="4.8" fill="${c.color}"><animateMotion path="${d}" dur="${durStr}" repeatCount="indefinite" calcMode="linear" /></circle>
+              <circle r="4.8" fill="${c.color}"><animateMotion path="${d}" dur="${durStr}" begin="-${(durVal/2).toFixed(2)}s" repeatCount="indefinite" calcMode="linear" /></circle>
+            `;
+          }
+        }
+      }
+    });
+  }
+
+  static getStubConfig() {
+    return {
+      title: 'Power Flow',
+      grid: '',
+      solar: '',
+      home: ''
+    };
+  }
 }
 
-class MultiPowerFlowCardEditor extends HTMLElement {
-  constructor(){super();this.attachShadow({mode:'open'});this._config=null;this._hass=null;}
-  setConfig(c){this._config=normaliseConfig(c||{});this._render();}
-  set hass(h){this._hass=h;this._render();}
-  _esc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
-  _opts(sel,empty=true){const st=this._hass?.states||{},ids=Object.keys(st).filter(x=>x.startsWith('sensor.')||x.startsWith('number.')).sort();let h=empty?'<option value="">— None / disabled —</option>':'';ids.forEach(id=>h+=`<option value="${this._esc(id)}" ${id===sel?'selected':''}>${this._esc(st[id]?.attributes?.friendly_name||id)} — ${this._esc(id)}</option>`);if(sel&&!ids.includes(sel))h+=`<option selected value="${this._esc(sel)}">${this._esc(sel)} (configured)</option>`;return h;}
-  _emit(c){this._config=normaliseConfig(c);this.dispatchEvent(new CustomEvent('config-changed',{detail:{config:this._config},bubbles:true,composed:true}));this._render();}
-  _render(){if(!this._config||!this._hass)return;const c=this._config,field=(id,label,n,d)=>`<div class="core"><b>${label}</b><label>Entity</label><select id="${id}_entity">${this._opts(n?.entity||'',true)}</select><label>Name</label><input id="${id}_name" value="${this._esc(n?.name||'')}" placeholder="${d.name}"><label>Icon</label><input id="${id}_icon" value="${this._esc(n?.icon||'')}" placeholder="${d.icon}"><label>Colour</label><input id="${id}_color" value="${this._esc(n?.color||'')}" placeholder="${d.color}"><label>Invert</label><select id="${id}_invert"><option value="false" ${!n?.invert?'selected':''}>No</option><option value="true" ${n?.invert?'selected':''}>Yes</option></select></div>`;const item=(type,n,i)=>`<div class="item"><b>${type==='battery'?(n.name||`Battery ${i+1}`):(n.name||`Device ${i+1}`)}</b><button data-remove="${type}:${i}">Remove</button><label>ID</label><input data-f="id" value="${this._esc(n.id||'')}"><label>Power entity</label><select data-f="entity">${this._opts(n.entity||'',false)}</select>${type==='battery'?`<label>SOC entity</label><select data-f="soc_entity">${this._opts(n.soc_entity||'',true)}</select><label>Status entity</label><select data-f="status_entity">${this._opts(n.status_entity||'',true)}</select>`:''}<label>Name</label><input data-f="name" value="${this._esc(n.name||'')}"><label>Icon</label><input data-f="icon" value="${this._esc(n.icon||'')}" placeholder="${type==='battery'?'mdi:battery':'mdi:flash'}"><label>Colour</label><input data-f="color" value="${this._esc(n.color||'')}"><label>Invert</label><select data-f="invert"><option value="false" ${!n.invert?'selected':''}>No</option><option value="true" ${n.invert?'selected':''}>Yes</option></select><label>Enabled</label><select data-f="enabled"><option value="true" ${n.enabled!==false?'selected':''}>Yes</option><option value="false" ${n.enabled===false?'selected':''}>No</option></select></div>`;this.shadowRoot.innerHTML=`<style>:host{display:block;padding:16px;color:var(--primary-text-color);font-family:system-ui,sans-serif}.sec{border:1px solid var(--divider-color);border-radius:12px;padding:14px;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.items{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.core,.item{border:1px solid var(--divider-color);border-radius:10px;padding:12px}label{display:block;font-size:12px;margin:7px 0 3px;opacity:.8}input,select{width:100%;box-sizing:border-box;padding:7px;border-radius:7px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color)}button{float:right;border:0;border-radius:7px;padding:6px 9px;background:var(--error-color);color:#fff;cursor:pointer}.add{float:none;background:var(--primary-color);margin-top:10px}.title{font-size:15px;font-weight:700;margin-bottom:10px}</style><div class="sec"><div class="title">General</div><label>Title</label><input id="title" value="${this._esc(c.title)}"></div><div class="sec"><div class="title">Core sensors</div><div class="grid">${field('grid','Grid',c.core.grid,MPFC_DEFAULTS.core.grid)}${field('solar','Solar',c.core.solar,MPFC_DEFAULTS.core.solar)}${field('home','Home',c.core.home,MPFC_DEFAULTS.core.home)}${field('low_carbon','Low Carbon',c.core.low_carbon,MPFC_DEFAULTS.core.low_carbon)}</div></div><div class="sec"><div class="title">Batteries</div><div class="items">${c.batteries.map((x,i)=>item('battery',x,i)).join('')}</div><button class="add" id="addBattery">+ Add battery</button></div><div class="sec"><div class="title">Devices</div><div class="items">${c.devices.map((x,i)=>item('device',x,i)).join('')}</div><button class="add" id="addDevice">+ Add device</button></div>`;this.shadowRoot.querySelectorAll('input,select').forEach(e=>{e.addEventListener('change',()=>this._read());e.addEventListener('input',()=>this._read());});this.shadowRoot.querySelectorAll('[data-remove]').forEach(b=>b.addEventListener('click',()=>{const [t,i]=b.dataset.remove.split(':');const key=t==='battery'?'batteries':'devices';this._emit({...c,[key]:c[key].filter((_,j)=>j!==Number(i))});}));this.shadowRoot.getElementById('addBattery')?.addEventListener('click',()=>this._emit({...c,batteries:[...c.batteries,{id:`battery_${c.batteries.length+1}`,entity:'',soc_entity:'',name:'',icon:'mdi:battery',color:'#00BCD4',invert:false,enabled:true}]}));this.shadowRoot.getElementById('addDevice')?.addEventListener('click',()=>this._emit({...c,devices:[...c.devices,{id:`device_${c.devices.length+1}`,entity:'',name:'',icon:'mdi:flash',color:'#9C27B0',invert:false,enabled:true}]}));}
-  _read(){const c=clone(this._config);c.title=this.shadowRoot.getElementById('title')?.value||'Power Flow';['grid','solar','home','low_carbon'].forEach(id=>c.core[id]={...c.core[id],entity:this.shadowRoot.getElementById(`${id}_entity`)?.value||'',name:this.shadowRoot.getElementById(`${id}_name`)?.value||'',icon:this.shadowRoot.getElementById(`${id}_icon`)?.value||'',color:this.shadowRoot.getElementById(`${id}_color`)?.value||'',invert:this.shadowRoot.getElementById(`${id}_invert`)?.value==='true'});['batteries','devices'].forEach(key=>{c[key]=[...this.shadowRoot.querySelectorAll(`.item`)].filter(x=>x.querySelector('[data-f="status_entity"]')!==null=== (key==='batteries')).map(x=>{const v=f=>x.querySelector(`[data-f="${f}"]`)?.value||'';const o={id:v('id'),entity:v('entity'),name:v('name'),icon:v('icon'),color:v('color'),invert:v('invert')==='true',enabled:v('enabled')!=='false'};if(key==='batteries'){o.soc_entity=v('soc_entity');o.status_entity=v('status_entity');}return o;});});this._emit(c);}
+if (!customElements.get('multi-power-flow-card')) {
+  customElements.define('multi-power-flow-card', MultiPowerFlowCard);
+}
+if (!customElements.get('multi-power-flow-card-v2')) {
+  customElements.define('multi-power-flow-card-v2', MultiPowerFlowCard);
 }
 
-if(!customElements.get('multi-power-flow-card'))customElements.define('multi-power-flow-card',MultiPowerFlowCard);
-if(!customElements.get('multi-power-flow-card-v2'))customElements.define('multi-power-flow-card-v2',MultiPowerFlowCard);
-if(!customElements.get('multi-power-flow-card-editor'))customElements.define('multi-power-flow-card-editor',MultiPowerFlowCardEditor);
-window.customCards=window.customCards||[];
-if(!window.customCards.some(c=>c.type==='multi-power-flow-card')){window.customCards.push({type:'multi-power-flow-card',name:'Multi Power Flow Card',description:'Generic configurable Home Assistant power-flow card.',preview:true});}
-if(!window.customCards.some(c=>c.type==='multi-power-flow-card-v2')){window.customCards.push({type:'multi-power-flow-card-v2',name:'Multi Power Flow Card V2',description:'Generic configurable Home Assistant power-flow card (V2 alias).',preview:true});}
+window.customCards = window.customCards || [];
+if (!window.customCards.some(c => c.type === 'multi-power-flow-card')) {
+  window.customCards.push({
+    type: 'multi-power-flow-card',
+    name: 'Multi Power Flow Card',
+    description: 'Generic configurable Home Assistant power-flow card.',
+    preview: true
+  });
+}
