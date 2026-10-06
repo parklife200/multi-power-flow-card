@@ -555,6 +555,196 @@ class MultiPowerFlowCard extends HTMLElement {
       }
     });
   }
+
+  static getConfigElement() {
+    return document.createElement('multi-power-flow-card-editor');
+  }
+
+  static getStubConfig() {
+    return {
+      title: 'Power Flow Plus',
+      entities: {
+        grid: 'sensor.myenergi_hub_11180810_power_grid',
+        solar: 'sensor.givtcp_fd2311g775_pv_power',
+        home: 'sensor.givtcp_fd2311g775_load_power',
+        fossil_fuel_percentage: 'sensor.electricity_maps_grid_fossil_fuel_percentage_2',
+        givenergy: {
+          entity: 'sensor.givtcp_fd2311g775_battery_power',
+          state_of_charge: 'sensor.givtcp_fd2311g775_soc'
+        },
+        solix: {
+          entity: 'sensor.solix_s2000_net_power',
+          state_of_charge: 'sensor.solix_s2000_state_of_charge',
+          ac_output: 'sensor.solix_s2000_ac_output_power'
+        }
+      }
+    };
+  }
+}
+
+class MultiPowerFlowCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+  }
+
+  setConfig(config) {
+    this._config = config || {};
+    this.render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+  }
+
+  _valueChanged(ev) {
+    if (!this._config) return;
+    const target = ev.target;
+    const path = target.getAttribute('data-path');
+    if (!path) return;
+
+    const value = ev.target.value;
+    const newConfig = JSON.parse(JSON.stringify(this._config));
+
+    const parts = path.split('.');
+    let curr = newConfig;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!curr[parts[i]]) curr[parts[i]] = {};
+      curr = curr[parts[i]];
+    }
+    curr[parts[parts.length - 1]] = value;
+
+    this.dispatchEvent(new CustomEvent('config-changed', {
+      detail: { config: newConfig },
+      bubbles: true,
+      composed: true
+    }));
+  }
+
+  render() {
+    if (!this._config) return;
+    const entities = this._config.entities || {};
+
+    const getEntVal = (field) => {
+      if (typeof field === 'string') return field;
+      if (typeof field === 'object' && field) return field.entity || '';
+      return '';
+    };
+
+    const title = this._config.title || 'Power Flow Plus';
+    const grid = getEntVal(entities.grid);
+    const solar = getEntVal(entities.solar);
+    const home = getEntVal(entities.home);
+    const fossil = getEntVal(entities.fossil_fuel_percentage);
+
+    const givPower = entities.givenergy?.entity || (typeof entities.givenergy === 'string' ? entities.givenergy : '');
+    const givSoc = entities.givenergy?.state_of_charge || '';
+
+    const solixPower = entities.solix?.entity || (typeof entities.solix === 'string' ? entities.solix : '');
+    const solixSoc = entities.solix?.state_of_charge || '';
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host {
+          display: block;
+          padding: 8px;
+          font-family: system-ui, -apple-system, sans-serif;
+          color: var(--primary-text-color, #fff);
+        }
+        .section {
+          margin-bottom: 16px;
+          background: var(--card-background-color, #1f2937);
+          padding: 12px 16px;
+          border-radius: 8px;
+          border: 1px solid var(--divider-color, #374151);
+        }
+        .section-title {
+          font-weight: 700;
+          font-size: 14px;
+          margin-bottom: 10px;
+          color: var(--primary-color, #00bcd4);
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+        .form-row {
+          display: flex;
+          flex-direction: column;
+          margin-bottom: 10px;
+        }
+        label {
+          font-size: 12px;
+          margin-bottom: 4px;
+          color: var(--secondary-text-color, #9ca3af);
+        }
+        input {
+          padding: 8px 10px;
+          background: var(--input-background-color, #111827);
+          border: 1px solid var(--divider-color, #4b5563);
+          border-radius: 6px;
+          color: #fff;
+          font-size: 13px;
+        }
+        input:focus {
+          outline: none;
+          border-color: var(--primary-color, #00bcd4);
+        }
+      </style>
+      <div class="card-config">
+        <div class="section">
+          <div class="section-title">General Settings</div>
+          <div class="form-row">
+            <label>Card Title</label>
+            <input type="text" data-path="title" value="${title}" />
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Main Power Entities</div>
+          <div class="form-row">
+            <label>Grid Entity ID</label>
+            <input type="text" data-path="entities.grid" value="${grid}" />
+          </div>
+          <div class="form-row">
+            <label>Solar Entity ID</label>
+            <input type="text" data-path="entities.solar" value="${solar}" />
+          </div>
+          <div class="form-row">
+            <label>Home Load Entity ID</label>
+            <input type="text" data-path="entities.home" value="${home}" />
+          </div>
+          <div class="form-row">
+            <label>Low Carbon / Fossil Fuel Entity ID</label>
+            <input type="text" data-path="entities.fossil_fuel_percentage" value="${fossil}" />
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Battery Entities</div>
+          <div class="form-row">
+            <label>GivEnergy Power Entity</label>
+            <input type="text" data-path="entities.givenergy.entity" value="${givPower}" />
+          </div>
+          <div class="form-row">
+            <label>GivEnergy SOC Entity</label>
+            <input type="text" data-path="entities.givenergy.state_of_charge" value="${givSoc}" />
+          </div>
+          <div class="form-row">
+            <label>Solix Power Entity</label>
+            <input type="text" data-path="entities.solix.entity" value="${solixPower}" />
+          </div>
+          <div class="form-row">
+            <label>Solix SOC Entity</label>
+            <input type="text" data-path="entities.solix.state_of_charge" value="${solixSoc}" />
+          </div>
+        </div>
+      </div>
+    `;
+
+    this.shadowRoot.querySelectorAll('input').forEach(input => {
+      input.addEventListener('change', (e) => this._valueChanged(e));
+      input.addEventListener('input', (e) => this._valueChanged(e));
+    });
+  }
 }
 
 if (!customElements.get('multi-power-flow-card')) {
@@ -562,4 +752,17 @@ if (!customElements.get('multi-power-flow-card')) {
 }
 if (!customElements.get('multi-power-flow-card-v2')) {
   customElements.define('multi-power-flow-card-v2', MultiPowerFlowCard);
+}
+if (!customElements.get('multi-power-flow-card-editor')) {
+  customElements.define('multi-power-flow-card-editor', MultiPowerFlowCardEditor);
+}
+
+window.customCards = window.customCards || [];
+if (!window.customCards.some(c => c.type === 'multi-power-flow-card')) {
+  window.customCards.push({
+    type: 'multi-power-flow-card',
+    name: 'Multi Power Flow Card',
+    description: 'A custom power flow card with Solix S2000 & GivEnergy dual-battery layout and multi-device support.',
+    preview: true
+  });
 }
